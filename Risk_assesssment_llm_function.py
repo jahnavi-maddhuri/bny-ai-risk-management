@@ -111,12 +111,7 @@ Areas to Analyze:
 
 # ---------------- Example Usage ----------------
 if __name__ == "__main__":
-    df = pd.DataFrame({
-        "news_text": [
-            "A major new geopolitical conflict has erupted in a key maritime strait, halting all shipping traffic. Global oil prices have spiked 30% overnight.",
-            "A ransomware attack has disrupted the operations of several hospitals, affecting patient data and emergency services."
-        ]
-    })
+    df=pd.read_csv("data/jpm_press_releases.csv")
 
     portfolio_industries = [
             "Technology", "Finance", "Healthcare", "Energy",
@@ -138,10 +133,12 @@ if __name__ == "__main__":
     ]
 
     # Apply the function across the DataFrame
-    expanded_df = df.apply(lambda x: analyze_news_risk(x["news_text"], industries_list=top_10_industries), axis=1)
+    expanded_df = df.apply(lambda x: analyze_news_risk(x["summary"], industries_list=portfolio_industries), axis=1)
 
     # Merge results back
     final_df = pd.concat([df, expanded_df.drop(columns=["news_item"])], axis=1)
 
     print("\n--- Full Industry-Wide Risk DataFrame ---\n")
     print(final_df.head())
+
+    final_df.to_csv("data/jpm_risk_assessment_output.csv", index=False)
