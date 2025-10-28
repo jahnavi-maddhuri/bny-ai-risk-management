@@ -28,13 +28,13 @@ def analyze_news_risk(news_text, industries_list):
     {{
         "risk_analysis": [
             {{
-                "industry": "Counterparty Risk",
-                "risk_score": 7,
+                "industry": "...",
+                "risk_score": ...,
                 "justification": "..."
             }},
             {{
-                "industry": "Market Risk",
-                "risk_score": 5,
+                "industry": "...",
+                "risk_score": ...,
                 "justification": "..."
             }},
             ...
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     df = pd.DataFrame({
         "news_text": [
             f"A major new geopolitical conflict has erupted in a key maritime strait, halting all shipping traffic. Global oil prices have spiked 30% overnight.",
-            "A ransomware attack has disrupted the operations of several hospitals, affecting patient data and emergency services."
+            f"A ransomware attack has disrupted the operations of several hospitals, affecting patient data and emergency services."
         ]
     })
 
