@@ -1,10 +1,17 @@
-
 import ollama
 import json
 import re
 import pandas as pd
 
 def analyze_news_risk(news_text, industries_list):
+    """
+    Analyze a single news item and return a Series where each industry's
+    risk_score and justification are separate columns.
+
+    This version safely escapes the news_text and cleans LLM output
+    to prevent invalid control character errors.
+    """
+
     if industries_list is None:
         industries_to_analyze = [
             "Technology", "Finance", "Healthcare", "Energy",
@@ -14,40 +21,39 @@ def analyze_news_risk(news_text, industries_list):
     else:
         industries_to_analyze = industries_list
 
+    # Escape the news_text so JSON remains valid
+    safe_news_text = json.dumps(news_text)
+
     industries_list_for_prompt = "\n".join(
         [f"{i+1}. {industry}" for i, industry in enumerate(industries_to_analyze)]
     )
 
     prompt_template = f"""
-    You are an expert risk analyst. Assess the risk impact of the following news on each of the listed areas.
-    You must only consider these areas, and you must return a risk score and justification for *each one*.
+You are an expert risk analyst. Assess the risk impact of the following news on each of the listed areas.
+You must only consider these areas, and you must return a risk score and justification for *each one*.
 
-    Return ONLY valid JSON as shown below, including all areas from the list:
+Return ONLY valid JSON as shown below, including all areas from the list. Escape all special characters inside strings.
 
-    Expected JSON Format:
-    {{
-        "risk_analysis": [
-            {{
-                "industry": "...",
-                "risk_score": ...,
-                "justification": "..."
-            }},
-            {{
-                "industry": "...",
-                "risk_score": ...,
-                "justification": "..."
-            }},
-            ...
-        ]
-    }}
-    News: {news_text}
+Expected JSON Format:
+{{
+    "risk_analysis": [
+        {{
+            "industry": "...",
+            "risk_score": ...,
+            "justification": "..."
+        }}
+    ]
+}}
 
-    Industries:
-    {industries_list_for_prompt}
-    """
+News:
+{safe_news_text}
+
+Areas to Analyze:
+{industries_list_for_prompt}
+"""
 
     try:
-        # ✅ Correct API call (no format="json")
+        # Call Ollama API
         response = ollama.chat(
             model="gemma3:1b",
             messages=[{"role": "user", "content": prompt_template}]
@@ -55,12 +61,17 @@ def analyze_news_risk(news_text, industries_list):
 
         content = response["message"]["content"]
 
-        # ✅ Extract JSON substring
+        # Extract JSON substring
         json_match = re.search(r'\{[\s\S]*\}', content)
         if not json_match:
             raise ValueError("No valid JSON detected in model output")
 
         json_str = json_match.group(0)
+
+        # Clean unescaped control characters
+        json_str = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
+
+        # Parse JSON
         result = json.loads(json_str)
 
         risk_analysis = result.get("risk_analysis", [])
@@ -74,11 +85,22 @@ def analyze_news_risk(news_text, industries_list):
             if not industry:
                 continue
 
-            score_col = f"{industry}_risk_score".replace(" ", "_").replace("&", "and")
-            just_col = f"{industry}_justification".replace(" ", "_").replace("&", "and")
+            # Clean column names for pandas
+            score_col = f"{industry}_risk_score".replace(" ", "_").replace("&", "and").replace("/", "")
+            just_col = f"{industry}_justification".replace(" ", "_").replace("&", "and").replace("/", "")
 
             row_data[score_col] = score
             row_data[just_col] = justification
+
+        # Ensure all expected industries exist even if missing from LLM output
+        for industry in industries_to_analyze:
+            score_col = f"{industry}_risk_score".replace(" ", "_").replace("&", "and").replace("/", "")
+            just_col = f"{industry}_justification".replace(" ", "_").replace("&", "and").replace("/", "")
+
+            if score_col not in row_data:
+                row_data[score_col] = None
+            if just_col not in row_data:
+                row_data[just_col] = None
 
         return pd.Series(row_data)
 
@@ -91,35 +113,34 @@ def analyze_news_risk(news_text, industries_list):
 if __name__ == "__main__":
     df = pd.DataFrame({
         "news_text": [
-            f"A major new geopolitical conflict has erupted in a key maritime strait, halting all shipping traffic. Global oil prices have spiked 30% overnight.",
-            f"A ransomware attack has disrupted the operations of several hospitals, affecting patient data and emergency services."
+            "A major new geopolitical conflict has erupted in a key maritime strait, halting all shipping traffic. Global oil prices have spiked 30% overnight.",
+            "A ransomware attack has disrupted the operations of several hospitals, affecting patient data and emergency services."
         ]
     })
 
-    top_10_industries = [
-        "Technology (IT, Software, Hardware)",
-        "Healthcare (Services, Equipment)",
-        "Financial Services (Banking, Insurance)",
-        "Energy (Oil & Gas, Renewables)",
-        "Consumer Goods & Retail (incl. E-commerce)",
-        "Automotive (Manufacturing, Sales)",
-        "Telecommunications",
-        "Pharmaceuticals & Biotechnology",
-        "Construction & Real Estate",
-        "Agriculture & Food Industry"
+    portfolio_industries = [
+            "Technology", "Finance", "Healthcare", "Energy",
+            "Manufacturing", "Transportation", "Retail",
+            "Telecommunications", "Real Estate", "Agriculture"
+        ]
+
+    risk_areas = [
+        "Counterparty Risk",
+        "Market Risk",
+        "Operational Risk",
+        "Liquidity Risk",
+        "Regulatory/Compliance Risk",
+        "Reputational Risk",
+        "Strategic Risk",
+        "Cybersecurity Risk",
+        "Environmental Risk",
+        "Geopolitical Risk"
     ]
-    risk_areas=["Counterparty Risk",
-         "Market Risk",
-         "Operational Risk",
-         "Liquidity Risk",
-         "Regulatory/Compliance Risk",
-         "Reputational Risk",
-         "Strategic Risk",
-         "Cybersecurity Risk",
-         "Environmental Risk",
-         "Geopolitical Risk"
-    ]
+
+    # Apply the function across the DataFrame
     expanded_df = df.apply(lambda x: analyze_news_risk(x["news_text"], industries_list=top_10_industries), axis=1)
+
+    # Merge results back
     final_df = pd.concat([df, expanded_df.drop(columns=["news_item"])], axis=1)
 
     print("\n--- Full Industry-Wide Risk DataFrame ---\n")
