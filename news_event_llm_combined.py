@@ -1,4 +1,4 @@
-import pandas as pdpip 
+import pandas as pd 
 import ollama
 import json
 import re
@@ -54,7 +54,7 @@ def get_consolidated_risk_score(row: pd.Series) -> pd.Series:
 You are an expert risk assessment system. Your task is to review the news summary and the specific industry risk scores (1-10) below.
 You must synthesize this information into a single, overall **Consolidated Risk Score (1-10)** for the entire portfolio impact, and provide a clear justification.\
 Keep in mind that if you provide industry risk scores of particular values, the overall risk score should lie within a similar range and should reflect the combination of industry risks, and should not \
-be significantly higher.
+be significantly higher. Do not add risks across industries, but ideally average them out or use a similar method, the consolidated risk score can not be higher than all the other individual industry risks.
 
 **The News Context:**
 "{news_summary}"
