@@ -175,6 +175,6 @@ if __name__ == "__main__":
     print("\n--- Final DataFrame with Structured Recommendations (First 5 Rows) ---")
     print(df[output_cols].head())
 
-    OUTPUT_FILE = "portfolio_actions_with_structured_recommendations.csv"
+    OUTPUT_FILE = "portfolio_actions_with_structured_recommendations1.csv"
     df.to_csv(OUTPUT_FILE, index=False)
     print(f"\n✅ Results saved to {OUTPUT_FILE}")
