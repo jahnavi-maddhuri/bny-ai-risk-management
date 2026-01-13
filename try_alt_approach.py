@@ -39,27 +39,40 @@ def extract_entities(article_summary):
 # -----------------------------
 # Step 2: Use LLM to classify event type
 # -----------------------------
-def classify_event_llm(summary, entity):
+def classify_event_llm_with_confidence(summary, entity):
+    """
+    Uses LLM to classify event types for a given entity and returns
+    both event type(s) and a confidence score (0-1) for each.
+    """
     prompt = f"""
     Here are possible bank event types: {EVENT_TYPES}.
-    For the following news about a bank, pick the most relevant event type(s):
+    For the following news about a bank, pick the most relevant event type(s) for the entity.
     News: "{summary}"
     Entity: "{entity}"
-    Return the event type(s) as a JSON array.
+    Return a JSON array of objects, each with "event_type" and "confidence" (0-1).
+    Example: [{"{"} "event_type": "liquidity_stress", "confidence": 0.9 {"}"}]
     """
     
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0
-    )
-    
     try:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0
+        )
         content = response.choices[0].message.content
-        event_list = eval(content)  # expect JSON array like ["liquidity_stress"]
-        return event_list
-    except:
+        
+        # Convert JSON-like output to Python list of dicts
+        event_conf_list = eval(content)
+        # Ensure confidence values are valid
+        for ev in event_conf_list:
+            if "confidence" not in ev:
+                ev["confidence"] = 0.9  # default if missing
+        return event_conf_list
+    
+    except Exception as e:
+        print(f"LLM parsing failed: {e}")
         return []
+
 
 # -----------------------------
 # Step 3: Compute anomaly factor
@@ -85,7 +98,7 @@ def compute_risk_scores(articles_df):
         entities = extract_entities(summary)
         
         for e in entities:
-            event_types = classify_event_llm(summary, e['entity'])
+            event_types = classify_event_llm_with_confidence(summary, e['entity'])
             if not event_types:
                 continue
             
