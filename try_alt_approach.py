@@ -11,7 +11,7 @@ from openai import OpenAI  # or your preferred LLM client
 # Setup NLP & LLM
 # -----------------------------
 nlp = spacy.load("en_core_web_sm")
-client = OpenAI(api_key="YOUR_API_KEY")  # replace with your key
+client = OpenAI(api_key="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")  # replace with your key
 
 # -----------------------------
 # Event types
