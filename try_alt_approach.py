@@ -1,9 +1,3 @@
-# TODO:
-
-# - figure out event-entity deduplication
-# - dynamic confidence calculated with a bigger transformer model
-# - make it faster
-# -----------------------------
 import json
 import math
 import spacy
@@ -213,12 +207,12 @@ def test_single_event(news_event):
 
 def test_multiple_summaries():
     summaries = [
-        "Bank ABC experiences sudden withdrawals leading to liquidity pressure.",
-        "Liquidity problems emerge at Bank ABC due to unexpected customer outflows.",
-        "Bank ABC's cash reserves are stressed after rapid withdrawal events.",
-        "Regulators investigate Bank XYZ over capital adequacy issues.",
-        "Bank DEF reports a merger acquisition with Bank GHI.",
-        "Bank JKL suffers operational outage affecting trading systems."
+        "JPMorgan Chase announced that Marianne Lake, CEO of Consumer & Community Banking, will present at the BancAnalysts Association of Boston Conference on November 4, 2022. She is scheduled to discuss the firm's strategy and outlook. An audio webcast of the presentation and slides will be available on the company's investor relations website for those unable to attend.",
+"JPMorgan Chase & Co. announced it will host its annual Investor Day on **Tuesday, May 21, 2024**, in New York City. Chairman and CEO Jamie Dimon, along with other senior management, will discuss the firm’s businesses, financial performance, and strategic priorities, with a live webcast available on their Investor Relations website.",
+"JPMorgan Chase will host its Third Quarter 2025 earnings call on Friday, October 11, 2024, at 8:30 a.m. Eastern Time. The bank plans to release its financial results an hour earlier at 8:00 a.m. ET, with Chairman and CEO Jamie Dimon and CFO Jeremy Barnum leading the webcast to discuss the results and business outlook. Interested parties can access the live audio webcast and related materials via the company's investor relations website.",
+"JPMorgan Chase & Co. announced that its Board of Directors declared a quarterly dividend on the corporation's common stock. The dividend is set at $1.00 per share. It is payable on October 31, 2023, to stockholders of record as of the close of business on October 6, 2023.",
+"JPMorgan Chase & Co. announced the declaration of regular quarterly cash dividends for numerous series of its outstanding preferred stock. These dividends are generally payable on January 1, 2024, to shareholders of record on various dates in December 2023 and January 2024. This press release outlines the specific dividend amounts and payment details for each preferred stock series.",
+"JPMorgan Chase & Co. announced the declaration of quarterly cash dividends for multiple series of its outstanding preferred stock. These dividends, covering various series including DD, EE, FF, and more, are scheduled for payment on December 15, 2023, to stockholders of record as of December 1, 2023, with specific per-share amounts declared for each series. This is a routine financial announcement regarding distributions to its preferred shareholders."
     ]
     results = score_articles(summaries)
     for r in results:
