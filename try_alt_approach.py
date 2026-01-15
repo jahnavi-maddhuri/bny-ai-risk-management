@@ -1,166 +1,200 @@
-import pandas as pd
+import json
+import math
+import spacy
+import ollama
 import numpy as np
+import re
+
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_distances
 from sklearn.preprocessing import MinMaxScaler
-import spacy
-import math
-from openai import OpenAI  # or your preferred LLM client
 
 # -----------------------------
-# Setup NLP & LLM
+# Load NLP
 # -----------------------------
 nlp = spacy.load("en_core_web_sm")
-client = OpenAI(api_key="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")  # replace with your key
 
 # -----------------------------
-# Event types
+# Event types and severity
 # -----------------------------
-EVENT_TYPES = [
-    "liquidity_stress", "credit_downgrade", "default", "regulatory_action",
-    "management_resignation", "fraud", "market_loss", "merger_acquisition"
-]
+EVENT_SEVERITY = {
+    "counterparty_default": 1.0,
+    "liquidity_stress": 0.9,
+    "credit_downgrade": 0.8,
+    "regulatory_action": 0.7,
+    "fraud_investigation": 0.9,
+    "sanctions_exposure": 0.85,
+    "operational_outage": 0.6,
+    "earnings_miss": 0.4,
+    "capital_raise": 0.3,
+    "merger_acquisition": 0.2
+}
+
+EVENT_TYPES = list(EVENT_SEVERITY.keys())
 
 # -----------------------------
-# Step 1: Extract entities
+# Entity extraction (spaCy)
 # -----------------------------
-def extract_entities(article_summary):
-    doc = nlp(article_summary)
+def extract_entities(summary):
+    doc = nlp(summary)
     entities = []
+
     for ent in doc.ents:
-        if ent.label_ in ["ORG", "GPE", "MONEY"]:
+        if ent.label_ in ["ORG", "GPE"]:
             entities.append({
                 "entity": ent.text,
                 "entity_type": ent.label_,
-                "confidence": ent.kb_id_ if hasattr(ent, "kb_id_") else 0.9
+                "confidence": 0.8
             })
+
     return entities
 
 # -----------------------------
-# Step 2: Use LLM to classify event type
+# Safe JSON parsing
 # -----------------------------
-def classify_event_llm_with_confidence(summary, entity):
-    """
-    Uses LLM to classify event types for a given entity and returns
-    both event type(s) and a confidence score (0-1) for each.
-    """
-    prompt = f"""
-    Here are possible bank event types: {EVENT_TYPES}.
-    For the following news about a bank, pick the most relevant event type(s) for the entity.
-    News: "{summary}"
-    Entity: "{entity}"
-    Return a JSON array of objects, each with "event_type" and "confidence" (0-1).
-    Example: [{"{"} "event_type": "liquidity_stress", "confidence": 0.9 {"}"}]
-    """
-    
+def safe_json_parse(text):
+    # Remove <think> blocks completely
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+    # Find the last JSON array in the text
+    matches = re.findall(r"\[[^\]]*\]", text, re.DOTALL)
+    if not matches:
+        return []
+
     try:
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0
-        )
-        content = response.choices[0].message.content
-        
-        # Convert JSON-like output to Python list of dicts
-        event_conf_list = eval(content)
-        # Ensure confidence values are valid
-        for ev in event_conf_list:
-            if "confidence" not in ev:
-                ev["confidence"] = 0.9  # default if missing
-        return event_conf_list
-    
-    except Exception as e:
-        print(f"LLM parsing failed: {e}")
+        return json.loads(matches[-1])
+    except Exception:
+        return []
+def safe_json_parse(text):
+    # Remove <think> blocks completely
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+    # Find the last JSON array in the text
+    matches = re.findall(r"\[[^\]]*\]", text, re.DOTALL)
+    if not matches:
+        return []
+
+    try:
+        return json.loads(matches[-1])
+    except Exception:
         return []
 
 
 # -----------------------------
-# Step 3: Compute anomaly factor
+# Event classification (Ollama)
+# -----------------------------
+def classify_event_llm(summary, entity):
+    prompt = f"""
+You are a financial risk analyst.
+
+Return ONLY a JSON array.
+Each element must be one of: {EVENT_TYPES}
+Do not include explanations or markdown.
+
+News summary:
+"{summary}"
+
+Entity:
+"{entity}"
+
+Examples:
+["liquidity_stress"]
+[]
+"""
+    response = ollama.chat(
+        model="phi4-mini-reasoning",
+        messages=[{"role": "user", "content": prompt}],
+        options={"temperature": 0.0}
+    )
+
+    raw = response["message"]["content"]
+    print("LLM", raw)
+    return safe_json_parse(raw)
+
+# -----------------------------
+# Anomaly factor (TF-IDF)
 # -----------------------------
 def compute_anomaly_factor(summaries):
-    vectorizer = TfidfVectorizer(stop_words='english')
+    vectorizer = TfidfVectorizer(stop_words="english")
     X = vectorizer.fit_transform(summaries)
+
     distances = cosine_distances(X)
     avg_distance = distances.mean(axis=1)
+
     scaler = MinMaxScaler(feature_range=(1, 2))
-    anomaly_factor = scaler.fit_transform(avg_distance.reshape(-1, 1)).flatten()
-    return anomaly_factor
+    return scaler.fit_transform(avg_distance.reshape(-1, 1)).flatten()
 
 # -----------------------------
-# Step 4: Compute risk scores
+# Source counting
 # -----------------------------
-def compute_risk_scores(articles_df):
-    all_rows = []
-    summaries = articles_df['summary'].tolist()
+def compute_num_sources(entity, summaries):
+    return sum(entity.lower() in s.lower() for s in summaries)
+
+# -----------------------------
+# Risk score computation
+# -----------------------------
+def compute_risk_score(confidence, event_type, num_sources, anomaly_factor):
+    severity = EVENT_SEVERITY.get(event_type, 0.1)
+    return confidence * severity * (1 + math.log(1 + num_sources)) * anomaly_factor
+
+# -----------------------------
+# Main pipeline
+# -----------------------------
+def score_articles(summaries):
+    if isinstance(summaries, str):
+        summaries = [summaries]
+
     anomaly_factors = compute_anomaly_factor(summaries)
-    
+    print(anomaly_factors)
+    results = []
+
     for idx, summary in enumerate(summaries):
         entities = extract_entities(summary)
-        
-        for e in entities:
-            event_types = classify_event_llm_with_confidence(summary, e['entity'])
-            if not event_types:
-                continue
-            
-            for ev in event_types:
-                # Severity map
-                severity_map = {
-                    "liquidity_stress": 8,
-                    "credit_downgrade": 7,
-                    "default": 10,
-                    "regulatory_action": 6,
-                    "management_resignation": 5,
-                    "fraud": 9,
-                    "market_loss": 6,
-                    "merger_acquisition": 4
-                }
-                severity = severity_map.get(ev, 5)
-                
-                all_rows.append({
-                    "entity": e['entity'],
-                    "event_type": ev,
-                    "confidence": e['confidence'],
-                    "anomaly_factor": anomaly_factors[idx],
-                    "source": articles_df.loc[idx, 'source'],
-                    "summary": summary,
-                    "severity": severity
+        print(entities)
+
+        for ent in entities:
+            events = classify_event_llm(summary, ent["entity"])
+            print(events)
+
+            for event in events:
+                num_sources = compute_num_sources(ent["entity"], summaries)
+
+                risk = compute_risk_score(
+                    confidence=ent["confidence"],
+                    event_type=event,
+                    num_sources=num_sources,
+                    anomaly_factor=anomaly_factors[idx]
+                )
+                print(risk)
+
+                results.append({
+                    "entity": ent["entity"],
+                    "entity_type": ent["entity_type"],
+                    "event_type": event,
+                    "risk_score": round(risk, 3)
                 })
-    
-    risk_df = pd.DataFrame(all_rows)
-    
-    # -----------------------------
-    # Aggregate per entity-event
-    # -----------------------------
-    agg_df = risk_df.groupby(['entity', 'event_type', 'severity']).agg({
-        'confidence': 'mean',
-        'anomaly_factor': 'mean',
-        'source': lambda x: list(set(x)),
-        'summary': 'first'
-    }).reset_index()
-    
-    # Calculate num_sources
-    agg_df['num_sources'] = agg_df['source'].apply(len)
-    
-    # Compute final risk score
-    agg_df['risk_score'] = agg_df.apply(
-        lambda row: row['confidence'] * row['severity'] * (1 + math.log(1 + row['num_sources'])) * row['anomaly_factor'],
-        axis=1
-    )
-    
-    return agg_df
+
+    return results
 
 # -----------------------------
-# Step 5: Example usage
+# Test wrapper (single event)
+# -----------------------------
+def test_single_event(news_event: str):
+    results = score_articles(news_event)
+    print(results)
+
+    if not results:
+        print("No events detected.")
+        return []
+
+    for r in results:
+        print(json.dumps(r, indent=2))
+
+    return results
+
+# -----------------------------
+# Example usage
 # -----------------------------
 if __name__ == "__main__":
-    data = [
-        {"summary": "Bank ABC faces liquidity stress after sudden withdrawals.", "source": "Reuters"},
-        {"summary": "Bank XYZ downgraded by credit agencies.", "source": "Bloomberg"},
-        {"summary": "Bank ABC management resignation raises concerns.", "source": "Financial Times"},
-        {"summary": "Bank XYZ merger acquisition completes successfully.", "source": "Reuters"},
-        {"summary": "Bank ABC liquidity stress continues amid panic.", "source": "Bloomberg"},
-    ]
-    
-    df_articles = pd.DataFrame(data)
-    risk_scores_df = compute_risk_scores(df_articles)
-    print(risk_scores_df)
+    news = "Bank ABC faces liquidity stress after sudden withdrawals."
+    test_single_event(news)
