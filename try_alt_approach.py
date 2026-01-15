@@ -135,6 +135,12 @@ def compute_num_sources(entity, summaries):
 # -----------------------------
 def compute_risk_score(confidence, event_type, num_sources, anomaly_factor):
     severity = EVENT_SEVERITY.get(event_type, 0.1)
+    print("FOR RISK")
+    print("confidence: ", confidence)
+    print("severity: ", severity)
+    print("num_sources: ", num_sources)
+    print("anomaly_factor: ", anomaly_factor)
+    
     return confidence * severity * (1 + math.log(1 + num_sources)) * anomaly_factor
 
 # -----------------------------
@@ -175,13 +181,12 @@ def score_articles(summaries):
                 })
 
     return results
-
 # -----------------------------
-# Test wrapper (single event)
+# Test wrapper (multiple events)
 # -----------------------------
-def test_single_event(news_event: str):
-    results = score_articles(news_event)
-    print(results)
+def test_multiple_events(news_events):
+    results = score_articles(news_events)
+    print("\nFINAL RESULTS\n")
 
     if not results:
         print("No events detected.")
@@ -192,9 +197,17 @@ def test_single_event(news_event: str):
 
     return results
 
+
 # -----------------------------
-# Example usage
+# Example usage (5 articles)
 # -----------------------------
 if __name__ == "__main__":
-    news = "Bank ABC faces liquidity stress after sudden withdrawals."
-    test_single_event(news)
+    news_articles = [
+        "Bank ABC faces liquidity stress after sudden withdrawals by corporate clients.",
+        "Ratings agency places Bank ABC on downgrade watch amid funding concerns.",
+        "Regulators investigate Bank XYZ over capital adequacy and stress testing failures.",
+        "Bank ABC announces emergency capital raise to stabilize balance sheet.",
+        "Bank LMN experiences operational outage disrupting online banking services."
+    ]
+
+    test_multiple_events(news_articles)
