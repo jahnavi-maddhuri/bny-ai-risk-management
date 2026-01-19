@@ -5,7 +5,7 @@ import ollama
 import numpy as np
 import re
 import yfinance as yf
-
+import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_distances
 from sklearn.preprocessing import MinMaxScaler
@@ -178,8 +178,8 @@ ENTITY_TICKER = {
     "Bank ABC": "ABC",
     "Bank XYZ": "XYZ",
     "Bank DEF": "DEF",
-    "Bank GHI": "GHI",
-    "Bank JKL": "JKL",
+    "Boeing": "BA",
+    "OpenAI": "JKL",
     "Google": "GOOGL",
     "JPMorgan Chase": "JPM"
 }
@@ -313,12 +313,39 @@ def test_multiple_summaries():
         print(json.dumps(r, indent=2))
     return results
 
+def score_csv_summaries(csv_path, n=10):
+    """
+    Read the 'summary' column from a CSV and compute risk scores for the first `n` rows.
+    Returns a list of dictionaries with the scores.
+    """
+    df = pd.read_csv(csv_path)
+
+    if "summary" not in df.columns:
+        raise ValueError("CSV must have a 'summary' column.")
+
+    df = df.head(n) if n is not None else df  # Take only first n rows
+    all_results = []
+
+    for idx, summary in enumerate(df["summary"].fillna("")):
+        print(f"Processing row {idx+1}/{len(df)}")
+        results = score_articles(summary)  # Uses your existing function
+        for r in results:
+            r["row_index"] = idx
+        all_results.extend(results)
+
+    return all_results
+
 # -----------------------------
 # Run test cases
 # -----------------------------
 if __name__ == "__main__":
     print("=== Single event test ===")
-    test_single_event("Google pauses AI image generation feature after controversy")
+    test_single_event("The Department of Justice has launched a criminal investigation into the Boeing jetliner blowout that left a gaping hole on an Alaska Airlines plane this January, the Wall Street Journal reported on Saturday.")
     
-    print("\n=== Multiple news summaries test ===")
-    test_multiple_summaries()
+    # print("\n=== Multiple news summaries test ===")
+    # test_multiple_summaries()
+
+    # csv_path = "gnews.csv"  # CSV file with a 'summary' column
+    # results = score_csv_summaries(csv_path, n=10)
+    # for r in results:
+    #     print(json.dumps(r, indent=2))
