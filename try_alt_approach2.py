@@ -48,6 +48,8 @@ def extract_entities(summary):
                 "entity_type": ent.label_,
                 "confidence": float(ent.kb_id_) if hasattr(ent, "kb_id_") and ent.kb_id_ else 0.9
             })
+
+    print(f"Extracted entities: {entities}")
     return entities
 
 # -----------------------------
@@ -177,7 +179,9 @@ def compute_risk_score(confidence, event_type, num_sources, anomaly_factor, mark
 ENTITY_TICKER = {
     "Bank ABC": "ABC",
     "Bank XYZ": "XYZ",
-    "Bank DEF": "DEF",
+    "BMW": "BMWKY",
+    "Mercedes-Benz": "MBGYY",
+    "Tesla": "TSLA",
     "Boeing": "BA",
     "OpenAI": "JKL",
     "Google": "GOOGL",
@@ -340,8 +344,8 @@ def score_csv_summaries(csv_path, n=10):
 # -----------------------------
 if __name__ == "__main__":
     print("=== Single event test ===")
-    test_single_event("The Department of Justice has launched a criminal investigation into the Boeing jetliner blowout that left a gaping hole on an Alaska Airlines plane this January, the Wall Street Journal reported on Saturday.")
-    
+    test_single_event("	Tesla, BMW, Mercedes-Benz, and more rated ‘poor’ in automated driving test ratings")
+
     # print("\n=== Multiple news summaries test ===")
     # test_multiple_summaries()
 
