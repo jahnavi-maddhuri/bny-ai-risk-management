@@ -1,0 +1,3 @@
+feeds:
+  - name: bny_mellon
+    query: '("BNY Mellon" OR "Bank of New York Mellon" OR BK)'
