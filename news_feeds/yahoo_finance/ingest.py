@@ -14,9 +14,11 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import requests
 import yaml
 from bs4 import BeautifulSoup
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 BASE_URL = "https://finance.yahoo.com/quote/{ticker}/news/"
+FALLBACK_URL = "https://finance.yahoo.com/topic/stock-market-news/"
+
 SCHEMA = [
     "id",
     "title",
@@ -69,20 +71,56 @@ def load_config(path: str) -> List[FeedConfig]:
     return feeds
 
 
-@retry(wait=wait_exponential(multiplier=1, min=2, max=20), stop=stop_after_attempt(3))
-def fetch_url(url: str, session: requests.Session) -> str:
+def should_retry(exception: Exception) -> bool:
+    """
+    Retry only for:
+      - network errors (RequestException with no response)
+      - HTTP 429
+      - HTTP 5xx
+    Do NOT retry 404 or other 4xx.
+    """
+    if isinstance(exception, requests.HTTPError) and exception.response is not None:
+        code = exception.response.status_code
+        return code == 429 or code >= 500
+    if isinstance(exception, requests.RequestException):
+        return exception.response is None
+    return False
+
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=20),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception(should_retry),
+)
+def fetch_url(url: str, session: requests.Session) -> Optional[str]:
     logging.debug("Fetching URL: %s", url)
     response = session.get(
         url,
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-            )
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
         },
         timeout=20,
     )
-    response.raise_for_status()
+
+    # Hard handling so 404/4xx won't become HTTPError -> tenacity RetryError
+    if response.status_code == 404:
+        logging.warning("Received 404 for %s", url)
+        return None
+
+    # Retriable HTTP statuses
+    if response.status_code == 429 or response.status_code >= 500:
+        response.raise_for_status()  # triggers retry via tenacity predicate
+
+    # Other 4xx are non-retriable; return None so caller can fallback/skip
+    if 400 <= response.status_code < 500:
+        logging.error("Received %s for %s", response.status_code, url)
+        return None
+
     return response.text
 
 
@@ -132,7 +170,7 @@ def extract_summary(container: Optional[BeautifulSoup]) -> str:
 def parse_news_items(html: str, base_url: str) -> List[NewsItem]:
     soup = BeautifulSoup(html, "html.parser")
     anchors = soup.find_all("a", href=True)
-    items = []
+    items: List[NewsItem] = []
     seen_links = set()
 
     for anchor in anchors:
@@ -142,13 +180,16 @@ def parse_news_items(html: str, base_url: str) -> List[NewsItem]:
         title = anchor.get_text(strip=True)
         if not title:
             continue
+
         normalized = normalize_link(href, base_url)
         if normalized in seen_links:
             continue
+
         container = anchor.find_parent(["article", "li", "div"])
         summary = extract_summary(container)
         published = extract_time(container)
         source = extract_source(container) or "Yahoo Finance"
+
         items.append(
             NewsItem(
                 title=title,
@@ -163,6 +204,38 @@ def parse_news_items(html: str, base_url: str) -> List[NewsItem]:
     return items
 
 
+def extract_query_terms(query: str) -> List[str]:
+    """
+    Extract quoted phrases from a query like:
+      ("BNY Mellon" OR "Bank of New York Mellon" OR BK) -sports -gossip
+    -> ["bny mellon", "bank of new york mellon"]
+    """
+    phrases: List[str] = []
+    start = 0
+    while True:
+        start_quote = query.find('"', start)
+        if start_quote == -1:
+            break
+        end_quote = query.find('"', start_quote + 1)
+        if end_quote == -1:
+            break
+        phrase = query[start_quote + 1 : end_quote].strip()
+        if phrase:
+            phrases.append(phrase.lower())
+        start = end_quote + 1
+    return phrases
+
+
+def matches_query(item: NewsItem, feed: FeedConfig) -> bool:
+    text = f"{item.title} {item.summary}".lower()
+    if feed.ticker.lower() in text:
+        return True
+    for phrase in extract_query_terms(feed.query):
+        if phrase in text:
+            return True
+    return False
+
+
 def enrich_summary(item: NewsItem, session: requests.Session) -> NewsItem:
     if item.summary:
         return item
@@ -171,6 +244,10 @@ def enrich_summary(item: NewsItem, session: requests.Session) -> NewsItem:
     except requests.RequestException as exc:
         logging.warning("Failed to fetch article for summary: %s", exc)
         return item
+
+    if not html:
+        return item
+
     soup = BeautifulSoup(html, "html.parser")
     meta = soup.find("meta", attrs={"name": "description"})
     if not meta:
@@ -188,11 +265,6 @@ def ensure_db(db_path: str) -> None:
             "id TEXT PRIMARY KEY, first_seen_at TEXT NOT NULL)"
         )
         conn.commit()
-
-
-def load_seen_ids(conn: sqlite3.Connection) -> set:
-    rows = conn.execute("SELECT id FROM seen_feed_ids").fetchall()
-    return {row[0] for row in rows}
 
 
 def insert_seen_id(conn: sqlite3.Connection, feed_id: str, first_seen_at: str) -> None:
@@ -224,12 +296,31 @@ def ingest_feed(
     session: requests.Session,
     fetched_at: str,
 ) -> int:
-    url = BASE_URL.format(ticker=feed.ticker)
-    html = fetch_url(url, session)
-    items = parse_news_items(html, url)
+    primary_url = BASE_URL.format(ticker=feed.ticker)
+
+    html = fetch_url(primary_url, session)
+    source_label = "primary"
+    base_for_parse = primary_url
+
+    if html is None:
+        logging.warning("Primary URL unavailable for %s; using fallback", feed.ticker)
+        html = fetch_url(FALLBACK_URL, session)
+        source_label = "fallback"
+        base_for_parse = FALLBACK_URL
+
+        if html is None:
+            logging.error("Fallback URL unavailable for %s; skipping feed", feed.ticker)
+            return 0
+
+    items = parse_news_items(html, base_for_parse)
+
+    # If we are parsing the generic topic page, filter down to the company query/ticker
+    if source_label == "fallback":
+        items = [item for item in items if matches_query(item, feed)]
 
     if len(items) == 0:
-        logging.warning("No items parsed for %s", feed.ticker)
+        logging.warning("No items parsed for %s (%s)", feed.ticker, source_label)
+
     if len(items) > 500:
         logging.warning(
             "Parsed %d items for %s; limiting to first %d",
@@ -237,28 +328,33 @@ def ingest_feed(
             feed.ticker,
             max_items,
         )
+
     items = items[:max_items]
-    logging.info("Parsed %d items for %s", len(items), feed.ticker)
+    logging.info("Parsed %d items for %s (%s)", len(items), feed.ticker, source_label)
 
     ensure_db(db_path)
     ensure_csv(out_csv)
 
-    new_rows = []
+    new_rows: List[List[str]] = []
     new_count = 0
     skipped = 0
 
     with sqlite3.connect(db_path) as conn:
         for item in items:
-            normalized_link = normalize_link(item.link, url)
+            # item.link is already absolute+normalized from parse_news_items, but re-normalize to be safe.
+            normalized_link = normalize_link(item.link, primary_url)
             feed_id = compute_id(normalized_link)
+
             existing = conn.execute(
                 "SELECT 1 FROM seen_feed_ids WHERE id = ?", (feed_id,)
             ).fetchone()
             if existing:
                 skipped += 1
                 continue
+
             item = enrich_summary(item, session)
             insert_seen_id(conn, feed_id, fetched_at)
+
             new_rows.append(
                 [
                     feed_id,
@@ -272,17 +368,13 @@ def ingest_feed(
                 ]
             )
             new_count += 1
+
         conn.commit()
 
     if new_rows:
         append_rows(out_csv, new_rows)
 
-    logging.info(
-        "Feed %s complete: %d new, %d skipped",
-        feed.ticker,
-        new_count,
-        skipped,
-    )
+    logging.info("Feed %s complete: %d new, %d skipped", feed.ticker, new_count, skipped)
     return new_count
 
 
@@ -345,6 +437,7 @@ def main() -> int:
                 fetched_at=fetched_at,
             )
         except requests.RequestException as exc:
+            # Network-ish errors only; 404/4xx are handled inside fetch_url and should not land here.
             logging.error("Network error for %s: %s", feed.ticker, exc)
             return 1
         except Exception as exc:  # noqa: BLE001
