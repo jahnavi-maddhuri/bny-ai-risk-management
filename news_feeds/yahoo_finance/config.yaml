@@ -1,0 +1,4 @@
+feeds:
+  - name: bny
+    ticker: BK
+    query: '("BNY Mellon" OR "Bank of New York Mellon" OR BK) -sports -gossip'
