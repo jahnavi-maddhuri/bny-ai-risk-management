@@ -344,7 +344,7 @@ def score_csv_summaries(csv_path, n=10):
 # -----------------------------
 if __name__ == "__main__":
     print("=== Single event test ===")
-    test_single_event("	Tesla, BMW, Mercedes-Benz, and more rated ‘poor’ in automated driving test ratings")
+    test_single_event("Bank of America faces liquidity pressure after deposit outflows.")
 
     # print("\n=== Multiple news summaries test ===")
     # test_multiple_summaries()

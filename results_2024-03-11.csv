@@ -1,0 +1,3 @@
+row_index,entity,entity_type,ticker,event_type,risk_score,justification,confidence,event_severity,num_sources,anomaly_factor,market_factor,volatility,leverage,liquidity,raw_score
+0,,,BA,operational_outage,1.11,"Boeing's manufacturing operations in Alaska are disrupted due to an environmental or labor-related blowout, halting critical production.",0.9,0.6,1,1.0,0.9698,1.163,0.5,1.182,0.8867
+0,,,BA,liquidity_stress,1.66,"Reduced revenue from prolonged Alaskan operational disruptions strains Boeing's cash flow, impacting its ability to meet short-term financial obligations.",0.9,0.9,1,1.0,0.9698,1.163,0.5,1.182,1.33
