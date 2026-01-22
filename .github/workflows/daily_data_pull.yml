@@ -1,9 +1,6 @@
 name: News Scraper Cron
 
 on:
-  push:
-    branches:
-      - "hotfix*"
   schedule:
     # Run at minute 0 past every hour (Hourly)
     - cron: "0 * * * *"
