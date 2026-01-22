@@ -8,6 +8,7 @@ IMAGE_NAME = risk-management-bny
 .PHONY: install
 install:
 	$(PIP) install -r requirements.txt
+	$(PIP) install --no-deps pygooglenews
 
 .PHONY: run-gnews
 run-gnews:
