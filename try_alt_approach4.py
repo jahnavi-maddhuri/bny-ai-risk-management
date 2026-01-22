@@ -334,7 +334,30 @@ def score_csv_with_details(csv_path, n=None, output_csv=None, summary_col="title
         df[id_col] = df.index  # fallback to row index
 
     if n is not None:
-        df = df.head(n)
+        ids = [
+            "b82073738c5fdc75f9a22e73a7ed80d5d4c6d7d91edbd13528d87e1840e25f51",
+            "395eef02e2bbaac1c1ed0d517cd76450210511a758c9545c6dbc77d79d8a555a",
+            "77c23dc9407f7b5e54902d280b790b9372653c3bbd83927c86d32a78d3b20761",
+            "1efeb06a176c08fcdcc0eb8b25576e0e7b5cebcf94ec08474d04122df1ca5c40",
+            "1ddf3cb8b045f46f5652da841692d349e5c1543944a65fc8dc2913d9a0e5be70",
+        "091060d68815fb7dd35dcd51f716bf4abe8797dcc3ea783e0479ebdedd01b75d",
+        "68a32566034a43d550c7835dc76b787fb1500070d70147cfb8edeb779dfd3f99",
+        "0a9a5dd51594b51da7b4ae71ca61515fbf1aa5f03f720fa5a91e8e822d4c0df8",
+        "f87dc4f72fef846c644f13840e5b68e1193b5fed14166a378563daf158c30cd9",
+        "5ee88d9e95958682482244516c6c343c1b4c9e5aad4544759935677cd37b1d53",
+        "14757de9f6fc8afd5cc727dee5bbaaedad648a32b4974e0e46affe4861d14151",
+        "740ef7b7adfca1e25fe315dfcaff2a6f0326f9779ce1f958ba710fffc6d9c45f",
+        "6bf67cd4ed4f71727660484c5f9c95b4ef1ddc4bfa600dcf12a588c87b8bfa0e",
+        "0c3941531617754bb3742fab5b1cdebfa6a8731c7c157daa4a1d73bfab5650ee",
+        "d1ab2136dee2561e390a5d30ec5c7e17bb2e548a19d89b9a83ed024f7ab74632",
+        "5414aa3a99f5d6c0702723cb09d3e838a788dde18ca5f71b409aae56a3872cf9",
+        "2519b6239cd45e8883765dbb0ab52ba463edb35d85b171da82bc54657e3fcd34",
+        "e9a1369ea6045a03ff48744241b3530a7b49b3ecd4934d32bbe0513d0ea13eed",
+        "1b4c3cec4035dc5285b0fdb435bb635e2c9a54a50961f7c51da7b81206f909c4",
+        "157979c6546ef037ba92164e0e4a10f541c512f077e990797b65584710a29d9d",
+    ]
+
+        df = df[df["id"].isin(ids)].head(n)
 
     summaries = df[summary_col].astype(str).tolist()
     anomaly_factors = compute_anomaly_factor(summaries, do_clustering=True)
@@ -391,5 +414,5 @@ if __name__ == "__main__":
     # )
     # print(json.dumps(out, indent=2))
 
-    df_results = score_csv_with_details("2024-03-11.csv", n=10, output_csv="results_2024-03-11.csv")
+    df_results = score_csv_with_details("2024-03-11.csv", n=10, output_csv="results_2024-03-11(skyelist).csv")
 
