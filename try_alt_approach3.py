@@ -362,11 +362,11 @@ def score_csv_with_details(csv_path, n, output_csv):
 # =========================
 
 if __name__ == "__main__":
-    # print("=== Single event test ===")
-    # out = score_articles(
-    #     "Bank of America faces liquidity pressure after deposit outflows."
-    # )
-    # print(json.dumps(out, indent=2))
+    print("=== Single event test ===")
+    out = score_articles(
+        "NYCB Stock Is Down. The Outlook Is Still Guarded. - Barron's"
+    )
+    print(json.dumps(out, indent=2))
 
-    df_results = score_csv_with_details("2024-03-11.csv", n=1, output_csv="results_2024-03-11.csv")
+    # df_results = score_csv_with_details("2024-03-11.csv", n=1, output_csv="results_2024-03-11.csv")
 

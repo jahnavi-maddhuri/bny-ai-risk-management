@@ -1,3 +1,5 @@
+# Do not use the ticker for entity mapping, this NEEDS TO BE CHANGED
+# Fix the entity detection algorithm
 import pandas as pd
 import numpy as np
 import json
@@ -364,16 +366,16 @@ def score_csv_with_details(csv_path, n=None, output_csv=None, summary_col="title
 
     all_results = []
 
-    for idx, row in df.iterrows():
+    for pos, (_, row) in enumerate(df.iterrows()):
         summary = str(row[summary_col])
         row_id = row[id_col]
         ticker = row[ticker_col] if pd.notna(row[ticker_col]) and str(row[ticker_col]).strip() else None
 
-        results = score_articles([summary], ticker_override=ticker, anomaly_factor=[anomaly_factors[idx]])
+        results = score_articles([summary], ticker_override=ticker, anomaly_factor=[anomaly_factors[pos]])
 
         for r in results:
             flattened = {
-                "row_index": idx,
+                "row_index": pos,
                 id_col: row_id,
                 summary_col: summary,
                 "entity": r["entity"],
@@ -408,11 +410,11 @@ def score_csv_with_details(csv_path, n=None, output_csv=None, summary_col="title
 # =========================
 
 if __name__ == "__main__":
-    # print("=== Single event test ===")
-    # out = score_articles(
-    #     "Bank of America faces liquidity pressure after deposit outflows."
-    # )
-    # print(json.dumps(out, indent=2))
+    print("=== Single event test ===")
+    out = score_articles(
+        "BMW EV sales roar in Korea on strong lineup of new models - KED Global"
+    )
+    print(json.dumps(out, indent=2))
 
-    df_results = score_csv_with_details("2024-03-11.csv", n=10, output_csv="results_2024-03-11(skyelist).csv")
+    # df_results = score_csv_with_details("2024-03-11.csv", n=10, output_csv="results_2024-03-11(skyelist).csv")
 
