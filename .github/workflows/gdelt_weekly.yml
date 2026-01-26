@@ -1,0 +1,57 @@
+name: GDELT Weekly Ingestion
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r news_feeds/gdelt/requirements.txt
+
+      - name: Run ingestion
+        run: |
+          cd news_feeds/gdelt
+          python ingest.py --config config.yaml
+
+      - name: Debug ingestion output
+        run: |
+          ls -la
+          ls -R news_feeds/gdelt || true
+          ls -R news_feeds/gdelt/data || true
+          git status --porcelain
+
+      - name: Validate output
+        run: |
+          cd news_feeds/gdelt
+          python validate.py --csv data/gdelt_news.csv
+
+      - name: Commit changes
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore: update gdelt news feed"
+            git push origin main
+          else
+            echo "No changes to commit"
+          fi
