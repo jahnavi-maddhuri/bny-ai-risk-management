@@ -25,9 +25,9 @@ summary:
   backfill_missing_summaries: true
   backfill_limit: 10
   hf_timeout_s: 18
-  hf_delay_s: 0.7
-  hf_model_primary: facebook/bart-large-cnn
-  hf_model_fallback: sshleifer/distilbart-cnn-12-6
+  hf_delay_s: 0.8
+  hf_model_primary: sshleifer/distilbart-cnn-12-6
+  hf_model_fallback: facebook/bart-large-cnn
 ```
 
 ### Summary fallback chain
@@ -35,12 +35,14 @@ summary:
 The ingestion pipeline fills the `summary` column using the following best-effort steps:
 
 1. Use GDELT `snippet` or `description` if available.
-2. Fetch the article URL and extract a candidate summary:
-   - Prefer `meta[name="description"]` or `og:description`.
-   - Otherwise, concatenate the first 2–4 `<p>` paragraphs.
-   - Cap extracted text to ~2,000 characters.
-3. If still empty, call the Hugging Face hosted inference endpoint (no auth) to summarize
-   the extracted text. This is best-effort and may be rate-limited.
+2. Fetch the article URL and extract main content for summarization:
+   - Prefer `<article>` text, then `main`/`[role="main"]`, then all paragraphs.
+   - Drop boilerplate paragraphs (e.g., starting with “Read …” or “Read … at”).
+   - Ignore very short paragraphs (<40 chars) to skip nav/footer/share noise.
+   - Cap extracted text to ~4,000 characters and require ≥500 chars for HF summarization.
+3. If summarization fails or is low quality, fall back to `meta`/`og:description` when
+   available. The HF call is best-effort and may be rate-limited.
+   - Model order: `sshleifer/distilbart-cnn-12-6`, then `facebook/bart-large-cnn`.
 
 The job never fails if summarization does; it will continue with empty summaries as needed.
 
@@ -50,7 +52,8 @@ You can tune the summarization behavior in `config.yaml`:
 - `backfill_missing_summaries`: enable best-effort backfill for older rows with empty summaries.
 - `backfill_limit`: cap how many existing rows are updated per run.
 - `hf_timeout_s`: request timeout for HF calls and article fetches.
-- `hf_delay_s`: delay between HF calls to reduce rate limiting.
+- `hf_delay_s`: delay between HF calls to reduce rate limiting (default: 0.8s).
+- Summarization parameters: `max_length=120`, `min_length=40`, `do_sample=false`.
 
 ## Usage
 

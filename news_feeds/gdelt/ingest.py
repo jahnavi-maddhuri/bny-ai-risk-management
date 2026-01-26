@@ -4,6 +4,7 @@ import csv
 import hashlib
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -28,13 +29,16 @@ SCHEMA = [
     "query",
     "fetched_at",
 ]
-SUMMARY_TEXT_LIMIT = 2000
-HF_SUMMARY_MAX_LENGTH = 80
-HF_SUMMARY_MIN_LENGTH = 25
+SUMMARY_TEXT_LIMIT = 4000
+HF_SUMMARY_MAX_LENGTH = 120
+HF_SUMMARY_MIN_LENGTH = 40
 HF_DEFAULT_TIMEOUT_S = 18
-HF_DEFAULT_DELAY_S = 0.7
-HF_PRIMARY_MODEL = "facebook/bart-large-cnn"
-HF_FALLBACK_MODEL = "sshleifer/distilbart-cnn-12-6"
+HF_DEFAULT_DELAY_S = 0.8
+HF_PRIMARY_MODEL = "sshleifer/distilbart-cnn-12-6"
+HF_FALLBACK_MODEL = "facebook/bart-large-cnn"
+MIN_ARTICLE_CHARS = 500
+MIN_PARAGRAPH_CHARS = 40
+MIN_SUMMARY_WORDS = 20
 
 
 @dataclass
@@ -215,49 +219,49 @@ def parse_datetime(value: str) -> Optional[datetime]:
     return None
 
 
-def extract_candidate_text(html: str) -> str:
+def is_boilerplate_paragraph(text: str) -> bool:
+    lowered = text.lower()
+    if lowered.startswith("read "):
+        return True
+    return bool(re.search(r"\bread\b.*\bat\b", lowered))
+
+
+def collect_paragraphs(container: BeautifulSoup) -> List[str]:
+    paragraphs: List[str] = []
+    for paragraph in container.find_all("p"):
+        text = normalize_text(paragraph.get_text(" ", strip=True))
+        if len(text) < MIN_PARAGRAPH_CHARS:
+            continue
+        if is_boilerplate_paragraph(text):
+            continue
+        paragraphs.append(text)
+    return paragraphs
+
+
+def extract_candidate_text(html: str) -> Tuple[str, str]:
     soup = BeautifulSoup(html, "html.parser")
+    meta_summary = ""
     meta = soup.find("meta", attrs={"name": "description"})
     if meta and meta.get("content"):
-        return normalize_text(meta["content"])[:SUMMARY_TEXT_LIMIT]
+        meta_summary = normalize_text(meta["content"])[:SUMMARY_TEXT_LIMIT]
     og_meta = soup.find("meta", attrs={"property": "og:description"})
     if og_meta and og_meta.get("content"):
-        return normalize_text(og_meta["content"])[:SUMMARY_TEXT_LIMIT]
-    paragraphs = []
-    for paragraph in soup.find_all("p"):
-        text = normalize_text(paragraph.get_text(" ", strip=True))
-        if text:
-            paragraphs.append(text)
-        if len(paragraphs) >= 4:
-            break
-    if not paragraphs:
-        return ""
-    candidate = " ".join(paragraphs)
-    return normalize_text(candidate)[:SUMMARY_TEXT_LIMIT]
+        meta_summary = normalize_text(og_meta["content"])[:SUMMARY_TEXT_LIMIT]
+
+    candidate_paragraphs: List[str] = []
+    for selector in ("article", "main", '[role="main"]'):
+        container = soup.select_one(selector)
+        if container:
+            candidate_paragraphs = collect_paragraphs(container)
+            if candidate_paragraphs:
+                break
+    if not candidate_paragraphs:
+        candidate_paragraphs = collect_paragraphs(soup)
+    candidate = normalize_text(" ".join(candidate_paragraphs))[:SUMMARY_TEXT_LIMIT]
+    return candidate, meta_summary
 
 
-def extract_candidate_text_with_source(html: str) -> Tuple[str, str]:
-    soup = BeautifulSoup(html, "html.parser")
-    meta = soup.find("meta", attrs={"name": "description"})
-    if meta and meta.get("content"):
-        return normalize_text(meta["content"])[:SUMMARY_TEXT_LIMIT], "meta"
-    og_meta = soup.find("meta", attrs={"property": "og:description"})
-    if og_meta and og_meta.get("content"):
-        return normalize_text(og_meta["content"])[:SUMMARY_TEXT_LIMIT], "meta"
-    paragraphs = []
-    for paragraph in soup.find_all("p"):
-        text = normalize_text(paragraph.get_text(" ", strip=True))
-        if text:
-            paragraphs.append(text)
-        if len(paragraphs) >= 4:
-            break
-    if not paragraphs:
-        return "", ""
-    candidate = " ".join(paragraphs)
-    return normalize_text(candidate)[:SUMMARY_TEXT_LIMIT], "paragraphs"
-
-
-def fetch_article_text(url: str, timeout: int) -> str:
+def fetch_article_text(url: str, timeout: int) -> Tuple[str, str]:
     try:
         response = requests.get(
             url,
@@ -270,25 +274,20 @@ def fetch_article_text(url: str, timeout: int) -> str:
         response.raise_for_status()
     except requests.RequestException as exc:
         logging.debug("Failed to fetch article %s: %s", url, exc)
-        return ""
+        return "", ""
     return extract_candidate_text(response.text)
 
 
-def fetch_article_text_with_source(url: str, timeout: int) -> Tuple[str, str]:
-    try:
-        response = requests.get(
-            url,
-            timeout=timeout,
-            headers={
-                "User-Agent": "bny-ai-risk-management/1.0",
-                "Accept": "text/html,application/xhtml+xml",
-            },
-        )
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        logging.debug("Failed to fetch article %s: %s", url, exc)
-        return "", ""
-    return extract_candidate_text_with_source(response.text)
+def is_summary_usable(summary: Optional[str]) -> bool:
+    if not summary:
+        return False
+    words = summary.split()
+    if len(words) < MIN_SUMMARY_WORDS:
+        return False
+    lowered = summary.lower()
+    if "read " in lowered or "click" in lowered:
+        return False
+    return True
 
 
 def hf_summarize(text: str, config: SummaryConfig) -> Optional[str]:
@@ -380,11 +379,14 @@ def backfill_missing_summaries(out_csv: str, summary_config: SummaryConfig) -> N
     empty_indices.sort(key=lambda item: item[1], reverse=True)
     selected_indices = [idx for idx, _ in empty_indices[: summary_config.backfill_limit]]
 
-    filled_from_meta = 0
-    filled_from_paragraphs = 0
-    filled_from_hf = 0
+    extracted_content_ok = 0
+    skipped_no_content = 0
+    hf_success = 0
+    hf_failed = 0
+    fell_back_to_meta = 0
     still_empty = 0
     updated = 0
+    hf_budget = summary_config.max_summaries_per_run
 
     for idx in selected_indices:
         row = rows[idx]
@@ -392,24 +394,32 @@ def backfill_missing_summaries(out_csv: str, summary_config: SummaryConfig) -> N
         if not link:
             still_empty += 1
             continue
-        candidate, source = fetch_article_text_with_source(link, summary_config.hf_timeout_s)
+        candidate, meta_summary = fetch_article_text(link, summary_config.hf_timeout_s)
         summary = ""
-        if candidate:
+        if candidate and len(candidate) >= MIN_ARTICLE_CHARS:
+            extracted_content_ok += 1
             hf_summary = None
-            if summary_config.enable_hf_summary:
+            attempted_hf = False
+            if summary_config.enable_hf_summary and hf_budget > 0:
+                attempted_hf = True
                 hf_summary = hf_summarize(candidate, summary_config)
+                hf_budget -= 1
                 time.sleep(summary_config.hf_delay_s)
-            if hf_summary:
+            if is_summary_usable(hf_summary):
                 summary = hf_summary
-                filled_from_hf += 1
-            else:
-                summary = candidate
-                if source == "meta":
-                    filled_from_meta += 1
-                else:
-                    filled_from_paragraphs += 1
+                hf_success += 1
+            elif attempted_hf:
+                hf_failed += 1
+        else:
+            skipped_no_content += 1
+        if not summary and meta_summary:
+            summary = meta_summary
+            fell_back_to_meta += 1
         elif summary_config.enable_hf_summary:
-            logging.debug("Backfill skipped HF summary for %s; no extracted text.", link)
+            logging.debug(
+                "Backfill skipped HF summary for %s; insufficient extracted text.",
+                link,
+            )
 
         if summary:
             row[summary_index] = summary
@@ -433,11 +443,14 @@ def backfill_missing_summaries(out_csv: str, summary_config: SummaryConfig) -> N
         os.replace(temp_name, out_csv)
 
     logging.info(
-        "Backfill complete: filled=%d meta=%d paragraphs=%d hf=%d still_empty=%d",
+        "Backfill complete: filled=%d extracted_content_ok=%d skipped_no_content=%d "
+        "hf_success=%d hf_failed=%d fell_back_to_meta=%d still_empty=%d",
         updated,
-        filled_from_meta,
-        filled_from_paragraphs,
-        filled_from_hf,
+        extracted_content_ok,
+        skipped_no_content,
+        hf_success,
+        hf_failed,
+        fell_back_to_meta,
         still_empty,
     )
 
@@ -468,10 +481,14 @@ def ingest_feed(
     new_count = 0
     skipped = 0
     summary_budget = summary_config.max_summaries_per_run
+    hf_budget = summary_config.max_summaries_per_run
     summary_counts = {
         "from_gdelt_snippet": 0,
-        "from_meta_or_paragraphs": 0,
-        "from_hf_llm": 0,
+        "extracted_content_ok": 0,
+        "skipped_no_content": 0,
+        "hf_success": 0,
+        "hf_failed": 0,
+        "fell_back_to_meta": 0,
         "still_empty": 0,
     }
 
@@ -487,16 +504,28 @@ def ingest_feed(
         seen_ids.add(feed_id)
         summary_source = "from_gdelt_snippet" if item.summary else ""
         if not item.summary and summary_budget > 0:
-            candidate = fetch_article_text(normalized_link, summary_config.hf_timeout_s)
-            if candidate and summary_config.enable_hf_summary:
-                hf_summary = hf_summarize(candidate, summary_config)
-                if hf_summary:
-                    item.summary = hf_summary
-                    summary_source = "from_hf_llm"
-                time.sleep(summary_config.hf_delay_s)
-            if not item.summary and candidate:
-                item.summary = candidate
-                summary_source = "from_meta_or_paragraphs"
+            candidate, meta_summary = fetch_article_text(
+                normalized_link, summary_config.hf_timeout_s
+            )
+            if candidate and len(candidate) >= MIN_ARTICLE_CHARS:
+                summary_counts["extracted_content_ok"] += 1
+                attempted_hf = False
+                hf_summary = None
+                if summary_config.enable_hf_summary and hf_budget > 0:
+                    attempted_hf = True
+                    hf_summary = hf_summarize(candidate, summary_config)
+                    hf_budget -= 1
+                    time.sleep(summary_config.hf_delay_s)
+                    if is_summary_usable(hf_summary):
+                        item.summary = hf_summary
+                        summary_counts["hf_success"] += 1
+                    elif attempted_hf:
+                        summary_counts["hf_failed"] += 1
+            else:
+                summary_counts["skipped_no_content"] += 1
+            if not item.summary and meta_summary:
+                item.summary = meta_summary
+                summary_counts["fell_back_to_meta"] += 1
             summary_budget -= 1
 
         if not item.summary:
@@ -523,11 +552,15 @@ def ingest_feed(
 
     logging.info("Feed %s complete: %d new, %d skipped", feed.name, new_count, skipped)
     logging.info(
-        "Summary sources for %s: gdelt=%d meta_or_paragraphs=%d hf=%d still_empty=%d",
+        "Summary stats for %s: gdelt=%d extracted_content_ok=%d skipped_no_content=%d "
+        "hf_success=%d hf_failed=%d fell_back_to_meta=%d still_empty=%d",
         feed.name,
         summary_counts["from_gdelt_snippet"],
-        summary_counts["from_meta_or_paragraphs"],
-        summary_counts["from_hf_llm"],
+        summary_counts["extracted_content_ok"],
+        summary_counts["skipped_no_content"],
+        summary_counts["hf_success"],
+        summary_counts["hf_failed"],
+        summary_counts["fell_back_to_meta"],
         summary_counts["still_empty"],
     )
     return new_count
