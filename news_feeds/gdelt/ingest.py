@@ -38,6 +38,8 @@ HF_PRIMARY_MODEL = "sshleifer/distilbart-cnn-12-6"
 HF_FALLBACK_MODEL = "facebook/bart-large-cnn"
 MIN_ARTICLE_CHARS = 500
 MIN_PARAGRAPH_CHARS = 40
+MIN_MEANINGFUL_PARAGRAPHS = 3
+MIN_META_HF_CHARS = 200
 MIN_SUMMARY_WORDS = 20
 
 
@@ -50,13 +52,19 @@ class FeedConfig:
 @dataclass
 class SummaryConfig:
     enable_hf_summary: bool = True
-    max_summaries_per_run: int = 10
+    max_hf_new_per_run: int = 10
+    max_hf_backfill_per_run: int = 20
     backfill_missing_summaries: bool = True
-    backfill_limit: int = 10
+    backfill_limit: int = 30
     hf_timeout_s: int = HF_DEFAULT_TIMEOUT_S
     hf_delay_s: float = HF_DEFAULT_DELAY_S
     hf_model_primary: str = HF_PRIMARY_MODEL
     hf_model_fallback: str = HF_FALLBACK_MODEL
+    denylist_domains: Tuple[str, ...] = (
+        "dailypolitical.com",
+        "themarketsdaily.com",
+        "tickerreport.com",
+    )
 
 
 @dataclass
@@ -97,13 +105,29 @@ def load_summary_config(path: str) -> SummaryConfig:
     summary = data.get("summary", {}) if isinstance(data, dict) else {}
     return SummaryConfig(
         enable_hf_summary=summary.get("enable_hf_summary", True),
-        max_summaries_per_run=int(summary.get("max_summaries_per_run", 10)),
+        max_hf_new_per_run=int(
+            summary.get(
+                "max_hf_new_per_run",
+                summary.get("max_summaries_per_run", 10),
+            )
+        ),
+        max_hf_backfill_per_run=int(
+            summary.get("max_hf_backfill_per_run", 20)
+        ),
         backfill_missing_summaries=summary.get("backfill_missing_summaries", True),
-        backfill_limit=int(summary.get("backfill_limit", 10)),
+        backfill_limit=int(summary.get("backfill_limit", 30)),
         hf_timeout_s=int(summary.get("hf_timeout_s", HF_DEFAULT_TIMEOUT_S)),
         hf_delay_s=float(summary.get("hf_delay_s", HF_DEFAULT_DELAY_S)),
         hf_model_primary=summary.get("hf_model_primary", HF_PRIMARY_MODEL),
         hf_model_fallback=summary.get("hf_model_fallback", HF_FALLBACK_MODEL),
+        denylist_domains=tuple(
+            domain.strip().lower()
+            for domain in summary.get(
+                "denylist_domains",
+                ["dailypolitical.com", "themarketsdaily.com", "tickerreport.com"],
+            )
+            if domain
+        ),
     )
 
 
@@ -221,9 +245,15 @@ def parse_datetime(value: str) -> Optional[datetime]:
 
 def is_boilerplate_paragraph(text: str) -> bool:
     lowered = text.lower()
-    if lowered.startswith("read "):
+    if re.search(r"\bsubscribe\b", lowered):
         return True
-    return bool(re.search(r"\bread\b.*\bat\b", lowered))
+    if re.search(r"\bsign up\b", lowered):
+        return True
+    if "copyright" in lowered or "all rights reserved" in lowered:
+        return True
+    if " at " in lowered and re.search(r"\bat\s+[\w\.-]+\s*$", lowered):
+        return bool(re.search(r"\bread\b", lowered))
+    return False
 
 
 def collect_paragraphs(container: BeautifulSoup) -> List[str]:
@@ -257,6 +287,10 @@ def extract_candidate_text(html: str) -> Tuple[str, str]:
                 break
     if not candidate_paragraphs:
         candidate_paragraphs = collect_paragraphs(soup)
+    if len(candidate_paragraphs) < MIN_MEANINGFUL_PARAGRAPHS:
+        candidate_paragraphs = []
+    else:
+        candidate_paragraphs = candidate_paragraphs[:6]
     candidate = normalize_text(" ".join(candidate_paragraphs))[:SUMMARY_TEXT_LIMIT]
     return candidate, meta_summary
 
@@ -377,7 +411,17 @@ def backfill_missing_summaries(out_csv: str, summary_config: SummaryConfig) -> N
         return
 
     empty_indices.sort(key=lambda item: item[1], reverse=True)
-    selected_indices = [idx for idx, _ in empty_indices[: summary_config.backfill_limit]]
+    selected_items = empty_indices[: summary_config.backfill_limit]
+    selected_indices = [idx for idx, _ in selected_items]
+    if selected_items:
+        first_ts = selected_items[0][1]
+        last_ts = selected_items[-1][1]
+        logging.info(
+            "Backfill selection: count=%d published_range=%s to %s",
+            len(selected_items),
+            first_ts.isoformat(),
+            last_ts.isoformat(),
+        )
 
     extracted_content_ok = 0
     skipped_no_content = 0
@@ -386,7 +430,8 @@ def backfill_missing_summaries(out_csv: str, summary_config: SummaryConfig) -> N
     fell_back_to_meta = 0
     still_empty = 0
     updated = 0
-    hf_budget = summary_config.max_summaries_per_run
+    skipped_denylist = 0
+    hf_budget = summary_config.max_hf_backfill_per_run
 
     for idx in selected_indices:
         row = rows[idx]
@@ -394,15 +439,27 @@ def backfill_missing_summaries(out_csv: str, summary_config: SummaryConfig) -> N
         if not link:
             still_empty += 1
             continue
+        parsed = urlparse(link)
+        domain = parsed.netloc.lower().lstrip("www.")
+        if domain and domain in summary_config.denylist_domains:
+            skipped_denylist += 1
+            still_empty += 1
+            continue
         candidate, meta_summary = fetch_article_text(link, summary_config.hf_timeout_s)
         summary = ""
-        if candidate and len(candidate) >= MIN_ARTICLE_CHARS:
-            extracted_content_ok += 1
+        hf_input = ""
+        if candidate:
+            if len(candidate) >= MIN_ARTICLE_CHARS:
+                extracted_content_ok += 1
+                hf_input = candidate
+            elif meta_summary and len(meta_summary) >= MIN_META_HF_CHARS:
+                hf_input = normalize_text(f"{meta_summary} {candidate}")
+        if hf_input:
             hf_summary = None
             attempted_hf = False
             if summary_config.enable_hf_summary and hf_budget > 0:
                 attempted_hf = True
-                hf_summary = hf_summarize(candidate, summary_config)
+                hf_summary = hf_summarize(hf_input, summary_config)
                 hf_budget -= 1
                 time.sleep(summary_config.hf_delay_s)
             if is_summary_usable(hf_summary):
@@ -444,7 +501,7 @@ def backfill_missing_summaries(out_csv: str, summary_config: SummaryConfig) -> N
 
     logging.info(
         "Backfill complete: filled=%d extracted_content_ok=%d skipped_no_content=%d "
-        "hf_success=%d hf_failed=%d fell_back_to_meta=%d still_empty=%d",
+        "hf_success=%d hf_failed=%d fell_back_to_meta=%d still_empty=%d skipped_denylist=%d",
         updated,
         extracted_content_ok,
         skipped_no_content,
@@ -452,6 +509,7 @@ def backfill_missing_summaries(out_csv: str, summary_config: SummaryConfig) -> N
         hf_failed,
         fell_back_to_meta,
         still_empty,
+        skipped_denylist,
     )
 
 
@@ -480,8 +538,8 @@ def ingest_feed(
     new_rows: List[List[str]] = []
     new_count = 0
     skipped = 0
-    summary_budget = summary_config.max_summaries_per_run
-    hf_budget = summary_config.max_summaries_per_run
+    summary_budget = summary_config.max_hf_new_per_run
+    hf_budget = summary_config.max_hf_new_per_run
     summary_counts = {
         "from_gdelt_snippet": 0,
         "extracted_content_ok": 0,
@@ -614,7 +672,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backfill_limit",
         type=int,
-        default=10,
+        default=30,
         help="Max number of existing rows to backfill per run",
     )
     return parser
@@ -631,7 +689,7 @@ def main() -> int:
         feeds = [FeedConfig(name=args.name or "single_feed", query=args.query)]
         summary_config = SummaryConfig(
             enable_hf_summary=args.enable_hf_summary,
-            max_summaries_per_run=args.max_summaries_per_run,
+            max_hf_new_per_run=args.max_summaries_per_run,
             backfill_missing_summaries=args.backfill_missing_summaries,
             backfill_limit=args.backfill_limit,
         )
@@ -642,7 +700,7 @@ def main() -> int:
             return 2
         summary_config = load_summary_config(args.config)
         summary_config.enable_hf_summary = args.enable_hf_summary
-        summary_config.max_summaries_per_run = args.max_summaries_per_run
+        summary_config.max_hf_new_per_run = args.max_summaries_per_run
         summary_config.backfill_missing_summaries = args.backfill_missing_summaries
         summary_config.backfill_limit = args.backfill_limit
 
