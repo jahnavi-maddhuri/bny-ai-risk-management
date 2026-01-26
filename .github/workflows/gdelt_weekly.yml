@@ -32,6 +32,13 @@ jobs:
           cd news_feeds/gdelt
           python ingest.py --config config.yaml
 
+      - name: Debug ingestion output
+        run: |
+          ls -la
+          ls -R news_feeds/gdelt || true
+          ls -R news_feeds/gdelt/data || true
+          git status --porcelain
+
       - name: Validate output
         run: |
           cd news_feeds/gdelt
@@ -39,10 +46,10 @@ jobs:
 
       - name: Commit changes
         run: |
-          if git status --porcelain | grep -E "news_feeds/gdelt/data/gdelt_news.csv"; then
+          git add -A
+          if ! git diff --cached --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add news_feeds/gdelt/data/gdelt_news.csv
             git commit -m "chore: update gdelt news feed"
             git push origin main
           else
