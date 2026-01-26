@@ -5,13 +5,15 @@ import hashlib
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import requests
 import yaml
+from bs4 import BeautifulSoup
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
@@ -25,12 +27,29 @@ SCHEMA = [
     "query",
     "fetched_at",
 ]
+SUMMARY_TEXT_LIMIT = 2000
+HF_SUMMARY_MAX_LENGTH = 80
+HF_SUMMARY_MIN_LENGTH = 25
+HF_DEFAULT_TIMEOUT_S = 18
+HF_DEFAULT_DELAY_S = 0.7
+HF_PRIMARY_MODEL = "facebook/bart-large-cnn"
+HF_FALLBACK_MODEL = "sshleifer/distilbart-cnn-12-6"
 
 
 @dataclass
 class FeedConfig:
     name: str
     query: str
+
+
+@dataclass
+class SummaryConfig:
+    enable_hf_summary: bool = True
+    max_summaries_per_run: int = 10
+    hf_timeout_s: int = HF_DEFAULT_TIMEOUT_S
+    hf_delay_s: float = HF_DEFAULT_DELAY_S
+    hf_model_primary: str = HF_PRIMARY_MODEL
+    hf_model_fallback: str = HF_FALLBACK_MODEL
 
 
 @dataclass
@@ -63,6 +82,20 @@ def load_config(path: str) -> List[FeedConfig]:
             )
         )
     return feeds
+
+
+def load_summary_config(path: str) -> SummaryConfig:
+    with open(path, "r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    summary = data.get("summary", {}) if isinstance(data, dict) else {}
+    return SummaryConfig(
+        enable_hf_summary=summary.get("enable_hf_summary", True),
+        max_summaries_per_run=int(summary.get("max_summaries_per_run", 10)),
+        hf_timeout_s=int(summary.get("hf_timeout_s", HF_DEFAULT_TIMEOUT_S)),
+        hf_delay_s=float(summary.get("hf_delay_s", HF_DEFAULT_DELAY_S)),
+        hf_model_primary=summary.get("hf_model_primary", HF_PRIMARY_MODEL),
+        hf_model_fallback=summary.get("hf_model_fallback", HF_FALLBACK_MODEL),
+    )
 
 
 @retry(
@@ -138,7 +171,7 @@ def build_item(article: dict) -> NewsItem:
         or article.get("sourcecountry")
         or "GDELT"
     )
-    summary = article.get("snippet", "").strip()
+    summary = (article.get("snippet") or article.get("description") or "").strip()
     return NewsItem(
         title=title,
         link=link,
@@ -148,6 +181,98 @@ def build_item(article: dict) -> NewsItem:
     )
 
 
+def normalize_text(text: str) -> str:
+    return " ".join(text.split()).strip()
+
+
+def extract_candidate_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    meta = soup.find("meta", attrs={"name": "description"})
+    if meta and meta.get("content"):
+        return normalize_text(meta["content"])[:SUMMARY_TEXT_LIMIT]
+    og_meta = soup.find("meta", attrs={"property": "og:description"})
+    if og_meta and og_meta.get("content"):
+        return normalize_text(og_meta["content"])[:SUMMARY_TEXT_LIMIT]
+    paragraphs = []
+    for paragraph in soup.find_all("p"):
+        text = normalize_text(paragraph.get_text(" ", strip=True))
+        if text:
+            paragraphs.append(text)
+        if len(paragraphs) >= 4:
+            break
+    if not paragraphs:
+        return ""
+    candidate = " ".join(paragraphs)
+    return normalize_text(candidate)[:SUMMARY_TEXT_LIMIT]
+
+
+def fetch_article_text(url: str, timeout: int) -> str:
+    try:
+        response = requests.get(
+            url,
+            timeout=timeout,
+            headers={
+                "User-Agent": "bny-ai-risk-management/1.0",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logging.debug("Failed to fetch article %s: %s", url, exc)
+        return ""
+    return extract_candidate_text(response.text)
+
+
+def hf_summarize(text: str, config: SummaryConfig) -> Optional[str]:
+    if not text:
+        return None
+    payload = {
+        "inputs": text,
+        "parameters": {
+            "max_length": HF_SUMMARY_MAX_LENGTH,
+            "min_length": HF_SUMMARY_MIN_LENGTH,
+            "do_sample": False,
+        },
+    }
+    for model_id in [config.hf_model_primary, config.hf_model_fallback]:
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    f"https://api-inference.huggingface.co/models/{model_id}",
+                    json=payload,
+                    timeout=config.hf_timeout_s,
+                )
+            except requests.RequestException as exc:
+                logging.debug("HF request error (%s): %s", model_id, exc)
+                if attempt == 1:
+                    break
+                continue
+            if response.status_code in {429, 503}:
+                logging.debug("HF rate limited (%s): %s", model_id, response.status_code)
+                break
+            if response.status_code >= 400:
+                logging.debug("HF error (%s): %s", model_id, response.status_code)
+                if attempt == 1:
+                    break
+                continue
+            try:
+                data = response.json()
+            except ValueError:
+                logging.debug("HF invalid JSON response (%s)", model_id)
+                if attempt == 1:
+                    break
+                continue
+            if isinstance(data, dict) and data.get("error"):
+                logging.debug("HF model error (%s): %s", model_id, data.get("error"))
+                break
+            if isinstance(data, list) and data:
+                summary_text = data[0].get("summary_text") if isinstance(data[0], dict) else None
+                if summary_text:
+                    return normalize_text(summary_text)
+            break
+    return None
+
+
 def ingest_feed(
     feed: FeedConfig,
     out_csv: str,
@@ -155,6 +280,7 @@ def ingest_feed(
     timespan: str,
     fetched_at: str,
     seen_ids: set,
+    summary_config: SummaryConfig,
 ) -> int:
     try:
         articles = fetch_feed(feed, max_records=max_records, timespan=timespan)
@@ -172,6 +298,13 @@ def ingest_feed(
     new_rows: List[List[str]] = []
     new_count = 0
     skipped = 0
+    summary_budget = summary_config.max_summaries_per_run
+    summary_counts = {
+        "from_gdelt_snippet": 0,
+        "from_meta_or_paragraphs": 0,
+        "from_hf_llm": 0,
+        "still_empty": 0,
+    }
 
     for article in articles:
         item = build_item(article)
@@ -183,6 +316,25 @@ def ingest_feed(
             skipped += 1
             continue
         seen_ids.add(feed_id)
+        summary_source = "from_gdelt_snippet" if item.summary else ""
+        if not item.summary and summary_budget > 0:
+            candidate = fetch_article_text(normalized_link, summary_config.hf_timeout_s)
+            if candidate and summary_config.enable_hf_summary:
+                hf_summary = hf_summarize(candidate, summary_config)
+                if hf_summary:
+                    item.summary = hf_summary
+                    summary_source = "from_hf_llm"
+                time.sleep(summary_config.hf_delay_s)
+            if not item.summary and candidate:
+                item.summary = candidate
+                summary_source = "from_meta_or_paragraphs"
+            summary_budget -= 1
+
+        if not item.summary:
+            summary_counts["still_empty"] += 1
+        elif summary_source:
+            summary_counts[summary_source] += 1
+
         new_rows.append(
             [
                 feed_id,
@@ -201,6 +353,14 @@ def ingest_feed(
         append_rows(out_csv, new_rows)
 
     logging.info("Feed %s complete: %d new, %d skipped", feed.name, new_count, skipped)
+    logging.info(
+        "Summary sources for %s: gdelt=%d meta_or_paragraphs=%d hf=%d still_empty=%d",
+        feed.name,
+        summary_counts["from_gdelt_snippet"],
+        summary_counts["from_meta_or_paragraphs"],
+        summary_counts["from_hf_llm"],
+        summary_counts["still_empty"],
+    )
     return new_count
 
 
@@ -231,6 +391,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging level",
     )
+    parser.add_argument(
+        "--enable_hf_summary",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable Hugging Face summarization for missing summaries",
+    )
+    parser.add_argument(
+        "--max_summaries_per_run",
+        type=int,
+        default=10,
+        help="Max number of items per run to attempt summarization for",
+    )
     return parser
 
 
@@ -243,11 +415,18 @@ def main() -> int:
     feeds: List[FeedConfig]
     if args.query:
         feeds = [FeedConfig(name=args.name or "single_feed", query=args.query)]
+        summary_config = SummaryConfig(
+            enable_hf_summary=args.enable_hf_summary,
+            max_summaries_per_run=args.max_summaries_per_run,
+        )
     else:
         feeds = load_config(args.config)
         if not feeds:
             logging.error("No feeds defined in %s", args.config)
             return 2
+        summary_config = load_summary_config(args.config)
+        summary_config.enable_hf_summary = args.enable_hf_summary
+        summary_config.max_summaries_per_run = args.max_summaries_per_run
 
     ensure_csv(args.out_csv)
     try:
@@ -267,6 +446,7 @@ def main() -> int:
             timespan=args.timespan,
             fetched_at=fetched_at,
             seen_ids=seen_ids,
+            summary_config=summary_config,
         )
 
     logging.info("Ingestion complete. Total new items: %d", total_new)

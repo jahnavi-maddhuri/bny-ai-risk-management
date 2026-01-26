@@ -1,3 +1,10 @@
 feeds:
   - name: bny_mellon
     query: '("BNY Mellon" OR "Bank of New York Mellon" OR BK)'
+summary:
+  enable_hf_summary: true
+  max_summaries_per_run: 10
+  hf_timeout_s: 18
+  hf_delay_s: 0.7
+  hf_model_primary: facebook/bart-large-cnn
+  hf_model_fallback: sshleifer/distilbart-cnn-12-6
