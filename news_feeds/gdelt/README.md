@@ -22,6 +22,8 @@ feeds:
 summary:
   enable_hf_summary: true
   max_summaries_per_run: 10
+  backfill_missing_summaries: true
+  backfill_limit: 10
   hf_timeout_s: 18
   hf_delay_s: 0.7
   hf_model_primary: facebook/bart-large-cnn
@@ -45,6 +47,8 @@ The job never fails if summarization does; it will continue with empty summaries
 You can tune the summarization behavior in `config.yaml`:
 
 - `max_summaries_per_run`: limit how many missing summaries are processed per run.
+- `backfill_missing_summaries`: enable best-effort backfill for older rows with empty summaries.
+- `backfill_limit`: cap how many existing rows are updated per run.
 - `hf_timeout_s`: request timeout for HF calls and article fetches.
 - `hf_delay_s`: delay between HF calls to reduce rate limiting.
 
@@ -63,6 +67,8 @@ python validate.py --csv data/gdelt_news.csv
 - `--[no-]enable_hf_summary` toggles Hugging Face summarization (default: enabled).
 - `--max_summaries_per_run 10` limits how many missing summaries are processed per run to
   reduce rate limiting.
+- `--[no-]backfill_missing_summaries` toggles the backfill step for existing rows.
+- `--backfill_limit 10` limits how many existing rows are updated per run.
 
 ## Output schema
 

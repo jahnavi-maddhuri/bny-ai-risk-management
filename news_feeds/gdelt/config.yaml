@@ -4,6 +4,8 @@ feeds:
 summary:
   enable_hf_summary: true
   max_summaries_per_run: 10
+  backfill_missing_summaries: true
+  backfill_limit: 10
   hf_timeout_s: 18
   hf_delay_s: 0.7
   hf_model_primary: facebook/bart-large-cnn

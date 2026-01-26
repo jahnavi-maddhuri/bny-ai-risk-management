@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -46,6 +47,8 @@ class FeedConfig:
 class SummaryConfig:
     enable_hf_summary: bool = True
     max_summaries_per_run: int = 10
+    backfill_missing_summaries: bool = True
+    backfill_limit: int = 10
     hf_timeout_s: int = HF_DEFAULT_TIMEOUT_S
     hf_delay_s: float = HF_DEFAULT_DELAY_S
     hf_model_primary: str = HF_PRIMARY_MODEL
@@ -91,6 +94,8 @@ def load_summary_config(path: str) -> SummaryConfig:
     return SummaryConfig(
         enable_hf_summary=summary.get("enable_hf_summary", True),
         max_summaries_per_run=int(summary.get("max_summaries_per_run", 10)),
+        backfill_missing_summaries=summary.get("backfill_missing_summaries", True),
+        backfill_limit=int(summary.get("backfill_limit", 10)),
         hf_timeout_s=int(summary.get("hf_timeout_s", HF_DEFAULT_TIMEOUT_S)),
         hf_delay_s=float(summary.get("hf_delay_s", HF_DEFAULT_DELAY_S)),
         hf_model_primary=summary.get("hf_model_primary", HF_PRIMARY_MODEL),
@@ -185,6 +190,31 @@ def normalize_text(text: str) -> str:
     return " ".join(text.split()).strip()
 
 
+def parse_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    for fmt in (
+        None,
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%Y%m%d%H%M%S",
+    ):
+        try:
+            if fmt:
+                parsed = datetime.strptime(cleaned, fmt)
+            else:
+                parsed = datetime.fromisoformat(cleaned)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except ValueError:
+            continue
+    return None
+
+
 def extract_candidate_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     meta = soup.find("meta", attrs={"name": "description"})
@@ -206,6 +236,27 @@ def extract_candidate_text(html: str) -> str:
     return normalize_text(candidate)[:SUMMARY_TEXT_LIMIT]
 
 
+def extract_candidate_text_with_source(html: str) -> Tuple[str, str]:
+    soup = BeautifulSoup(html, "html.parser")
+    meta = soup.find("meta", attrs={"name": "description"})
+    if meta and meta.get("content"):
+        return normalize_text(meta["content"])[:SUMMARY_TEXT_LIMIT], "meta"
+    og_meta = soup.find("meta", attrs={"property": "og:description"})
+    if og_meta and og_meta.get("content"):
+        return normalize_text(og_meta["content"])[:SUMMARY_TEXT_LIMIT], "meta"
+    paragraphs = []
+    for paragraph in soup.find_all("p"):
+        text = normalize_text(paragraph.get_text(" ", strip=True))
+        if text:
+            paragraphs.append(text)
+        if len(paragraphs) >= 4:
+            break
+    if not paragraphs:
+        return "", ""
+    candidate = " ".join(paragraphs)
+    return normalize_text(candidate)[:SUMMARY_TEXT_LIMIT], "paragraphs"
+
+
 def fetch_article_text(url: str, timeout: int) -> str:
     try:
         response = requests.get(
@@ -221,6 +272,23 @@ def fetch_article_text(url: str, timeout: int) -> str:
         logging.debug("Failed to fetch article %s: %s", url, exc)
         return ""
     return extract_candidate_text(response.text)
+
+
+def fetch_article_text_with_source(url: str, timeout: int) -> Tuple[str, str]:
+    try:
+        response = requests.get(
+            url,
+            timeout=timeout,
+            headers={
+                "User-Agent": "bny-ai-risk-management/1.0",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logging.debug("Failed to fetch article %s: %s", url, exc)
+        return "", ""
+    return extract_candidate_text_with_source(response.text)
 
 
 def hf_summarize(text: str, config: SummaryConfig) -> Optional[str]:
@@ -271,6 +339,107 @@ def hf_summarize(text: str, config: SummaryConfig) -> Optional[str]:
                     return normalize_text(summary_text)
             break
     return None
+
+
+def backfill_missing_summaries(out_csv: str, summary_config: SummaryConfig) -> None:
+    if not summary_config.backfill_missing_summaries:
+        logging.info("Backfill disabled; skipping missing summary backfill.")
+        return
+    if not os.path.exists(out_csv):
+        logging.warning("Backfill skipped; CSV not found at %s", out_csv)
+        return
+    with open(out_csv, "r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        header = next(reader, [])
+        if header != SCHEMA:
+            logging.error("Backfill aborted; CSV header mismatch in %s", out_csv)
+            return
+        rows = list(reader)
+
+    summary_index = SCHEMA.index("summary")
+    link_index = SCHEMA.index("link")
+    published_index = SCHEMA.index("published")
+    fetched_index = SCHEMA.index("fetched_at")
+
+    empty_indices: List[Tuple[int, datetime]] = []
+    for idx, row in enumerate(rows):
+        summary_value = row[summary_index] if len(row) > summary_index else ""
+        if not summary_value.strip():
+            published = row[published_index] if len(row) > published_index else ""
+            fetched = row[fetched_index] if len(row) > fetched_index else ""
+            parsed = parse_datetime(published) or parse_datetime(fetched) or datetime.min.replace(
+                tzinfo=timezone.utc
+            )
+            empty_indices.append((idx, parsed))
+
+    empty_before = len(empty_indices)
+    logging.info("Backfill candidates with empty summary: %d", empty_before)
+    if empty_before == 0:
+        return
+
+    empty_indices.sort(key=lambda item: item[1], reverse=True)
+    selected_indices = [idx for idx, _ in empty_indices[: summary_config.backfill_limit]]
+
+    filled_from_meta = 0
+    filled_from_paragraphs = 0
+    filled_from_hf = 0
+    still_empty = 0
+    updated = 0
+
+    for idx in selected_indices:
+        row = rows[idx]
+        link = row[link_index] if len(row) > link_index else ""
+        if not link:
+            still_empty += 1
+            continue
+        candidate, source = fetch_article_text_with_source(link, summary_config.hf_timeout_s)
+        summary = ""
+        if candidate:
+            hf_summary = None
+            if summary_config.enable_hf_summary:
+                hf_summary = hf_summarize(candidate, summary_config)
+                time.sleep(summary_config.hf_delay_s)
+            if hf_summary:
+                summary = hf_summary
+                filled_from_hf += 1
+            else:
+                summary = candidate
+                if source == "meta":
+                    filled_from_meta += 1
+                else:
+                    filled_from_paragraphs += 1
+        elif summary_config.enable_hf_summary:
+            logging.debug("Backfill skipped HF summary for %s; no extracted text.", link)
+
+        if summary:
+            row[summary_index] = summary
+            updated += 1
+        else:
+            still_empty += 1
+
+    if updated:
+        directory = os.path.dirname(out_csv) or "."
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="",
+            dir=directory,
+            delete=False,
+        ) as handle:
+            writer = csv.writer(handle)
+            writer.writerow(SCHEMA)
+            writer.writerows(rows)
+            temp_name = handle.name
+        os.replace(temp_name, out_csv)
+
+    logging.info(
+        "Backfill complete: filled=%d meta=%d paragraphs=%d hf=%d still_empty=%d",
+        updated,
+        filled_from_meta,
+        filled_from_paragraphs,
+        filled_from_hf,
+        still_empty,
+    )
 
 
 def ingest_feed(
@@ -403,6 +572,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=10,
         help="Max number of items per run to attempt summarization for",
     )
+    parser.add_argument(
+        "--backfill_missing_summaries",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Backfill empty summaries in existing CSV rows",
+    )
+    parser.add_argument(
+        "--backfill_limit",
+        type=int,
+        default=10,
+        help="Max number of existing rows to backfill per run",
+    )
     return parser
 
 
@@ -418,6 +599,8 @@ def main() -> int:
         summary_config = SummaryConfig(
             enable_hf_summary=args.enable_hf_summary,
             max_summaries_per_run=args.max_summaries_per_run,
+            backfill_missing_summaries=args.backfill_missing_summaries,
+            backfill_limit=args.backfill_limit,
         )
     else:
         feeds = load_config(args.config)
@@ -427,6 +610,8 @@ def main() -> int:
         summary_config = load_summary_config(args.config)
         summary_config.enable_hf_summary = args.enable_hf_summary
         summary_config.max_summaries_per_run = args.max_summaries_per_run
+        summary_config.backfill_missing_summaries = args.backfill_missing_summaries
+        summary_config.backfill_limit = args.backfill_limit
 
     ensure_csv(args.out_csv)
     try:
@@ -448,6 +633,8 @@ def main() -> int:
             seen_ids=seen_ids,
             summary_config=summary_config,
         )
+
+    backfill_missing_summaries(args.out_csv, summary_config)
 
     logging.info("Ingestion complete. Total new items: %d", total_new)
     return 0
