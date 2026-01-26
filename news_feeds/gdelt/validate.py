@@ -6,6 +6,7 @@ import sys
 
 SCHEMA = [
     "id",
+    "ticker",
     "title",
     "link",
     "published",

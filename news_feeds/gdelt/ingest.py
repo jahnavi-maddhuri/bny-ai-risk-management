@@ -21,6 +21,17 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 SCHEMA = [
     "id",
+    "ticker",
+    "title",
+    "link",
+    "published",
+    "source",
+    "summary",
+    "query",
+    "fetched_at",
+]
+OLD_SCHEMA = [
+    "id",
     "title",
     "link",
     "published",
@@ -169,12 +180,66 @@ def compute_id(normalized_link: str) -> str:
     return hashlib.sha256(normalized_link.encode("utf-8")).hexdigest()
 
 
+def infer_ticker(query: str) -> str:
+    if not query:
+        return "UNKNOWN"
+    lowered = query.lower()
+    if (
+        "bny mellon" in lowered
+        or "bank of new york mellon" in lowered
+        or "bny" in lowered
+        or re.search(r"\bbk\b", lowered)
+    ):
+        return "BK"
+    return "UNKNOWN"
+
+
 def ensure_csv(out_csv: str) -> None:
     os.makedirs(os.path.dirname(out_csv), exist_ok=True)
     if not os.path.exists(out_csv):
         with open(out_csv, "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(SCHEMA)
+
+
+def migrate_csv_schema(out_csv: str) -> None:
+    if not os.path.exists(out_csv):
+        return
+    with open(out_csv, "r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        header = next(reader, [])
+        if header == SCHEMA:
+            return
+        if header != OLD_SCHEMA:
+            logging.warning("CSV schema mismatch in %s; skipping migration.", out_csv)
+            return
+        rows = list(reader)
+
+    migrated_rows = 0
+    updated_rows: List[List[str]] = []
+    query_index = OLD_SCHEMA.index("query")
+    for row in rows:
+        padded = row + [""] * (len(OLD_SCHEMA) - len(row))
+        ticker = infer_ticker(padded[query_index] if len(padded) > query_index else "")
+        updated_row = padded[:]
+        updated_row.insert(1, ticker)
+        updated_rows.append(updated_row)
+        migrated_rows += 1
+
+    directory = os.path.dirname(out_csv) or "."
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        newline="",
+        dir=directory,
+        delete=False,
+    ) as handle:
+        writer = csv.writer(handle)
+        writer.writerow(SCHEMA)
+        writer.writerows(updated_rows)
+        temp_name = handle.name
+    os.replace(temp_name, out_csv)
+    logging.info("Migrated CSV schema for %s; rows updated: %d", out_csv, migrated_rows)
 
 
 def load_existing_ids(out_csv: str) -> set:
@@ -594,6 +659,7 @@ def ingest_feed(
         new_rows.append(
             [
                 feed_id,
+                infer_ticker(feed.query),
                 item.title,
                 normalized_link,
                 item.published,
@@ -705,6 +771,7 @@ def main() -> int:
         summary_config.backfill_limit = args.backfill_limit
 
     ensure_csv(args.out_csv)
+    migrate_csv_schema(args.out_csv)
     try:
         seen_ids = load_existing_ids(args.out_csv)
     except ValueError as exc:
