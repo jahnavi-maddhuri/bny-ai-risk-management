@@ -7,6 +7,6 @@ summary:
   backfill_missing_summaries: true
   backfill_limit: 10
   hf_timeout_s: 18
-  hf_delay_s: 0.7
-  hf_model_primary: facebook/bart-large-cnn
-  hf_model_fallback: sshleifer/distilbart-cnn-12-6
+  hf_delay_s: 0.8
+  hf_model_primary: sshleifer/distilbart-cnn-12-6
+  hf_model_fallback: facebook/bart-large-cnn
