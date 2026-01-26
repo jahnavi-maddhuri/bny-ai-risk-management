@@ -21,9 +21,14 @@ feeds:
     query: '"BNY Mellon" OR "Bank of New York Mellon" OR BK'
 summary:
   enable_hf_summary: true
-  max_summaries_per_run: 10
+  max_hf_new_per_run: 10
+  max_hf_backfill_per_run: 20
   backfill_missing_summaries: true
-  backfill_limit: 10
+  backfill_limit: 30
+  denylist_domains:
+    - dailypolitical.com
+    - themarketsdaily.com
+    - tickerreport.com
   hf_timeout_s: 18
   hf_delay_s: 0.8
   hf_model_primary: sshleifer/distilbart-cnn-12-6
@@ -37,20 +42,25 @@ The ingestion pipeline fills the `summary` column using the following best-effor
 1. Use GDELT `snippet` or `description` if available.
 2. Fetch the article URL and extract main content for summarization:
    - Prefer `<article>` text, then `main`/`[role="main"]`, then all paragraphs.
-   - Drop boilerplate paragraphs (e.g., starting with “Read …” or “Read … at”).
+   - Drop boilerplate paragraphs (e.g., “Read … at …”, subscribe/sign-up prompts).
    - Ignore very short paragraphs (<40 chars) to skip nav/footer/share noise.
-   - Cap extracted text to ~4,000 characters and require ≥500 chars for HF summarization.
-3. If summarization fails or is low quality, fall back to `meta`/`og:description` when
+   - Prefer the first 3–6 meaningful paragraphs to reduce recommendation noise.
+   - Cap extracted text to ~4,000 characters.
+3. If extracted text is short but a long `meta`/`og:description` exists, use that for HF
+   summarization as a fallback input.
+4. If summarization fails or is low quality, fall back to `meta`/`og:description` when
    available. The HF call is best-effort and may be rate-limited.
    - Model order: `sshleifer/distilbart-cnn-12-6`, then `facebook/bart-large-cnn`.
 
 The job never fails if summarization does; it will continue with empty summaries as needed.
 
 You can tune the summarization behavior in `config.yaml`:
-
-- `max_summaries_per_run`: limit how many missing summaries are processed per run.
+- `max_hf_new_per_run`: limit HF summary attempts for newly ingested rows.
+- `max_hf_backfill_per_run`: limit HF summary attempts for backfill rows.
 - `backfill_missing_summaries`: enable best-effort backfill for older rows with empty summaries.
-- `backfill_limit`: cap how many existing rows are updated per run.
+- `backfill_limit`: cap how many existing rows are updated per run (older rows will
+  continue to be processed across weekly runs).
+- `denylist_domains`: skip fetching/summarizing known low-quality domains during backfill.
 - `hf_timeout_s`: request timeout for HF calls and article fetches.
 - `hf_delay_s`: delay between HF calls to reduce rate limiting (default: 0.8s).
 - Summarization parameters: `max_length=120`, `min_length=40`, `do_sample=false`.
@@ -68,10 +78,9 @@ python validate.py --csv data/gdelt_news.csv
 - `--max_records 200` controls the max articles per query.
 - `--timespan 7d` controls the lookback window (GDELT timespan syntax).
 - `--[no-]enable_hf_summary` toggles Hugging Face summarization (default: enabled).
-- `--max_summaries_per_run 10` limits how many missing summaries are processed per run to
-  reduce rate limiting.
+- `--max_summaries_per_run 10` limits how many new rows attempt HF summarization per run.
 - `--[no-]backfill_missing_summaries` toggles the backfill step for existing rows.
-- `--backfill_limit 10` limits how many existing rows are updated per run.
+- `--backfill_limit 30` limits how many existing rows are updated per run.
 
 ## Output schema
 
