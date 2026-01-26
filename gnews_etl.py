@@ -18,16 +18,17 @@ from pygooglenews import GoogleNews
 
 # Entities to track (ticker symbols and company names)
 ENTITIES = {
-    'BA': ['Boeing', 'BA'],
-    'RDDT': ['Reddit', 'RDDT'],
-    'AAPL': ['Apple', 'AAPL'],
-    'NVO': ['Novo Nordisk', 'NVO'],
-    'DJT': ['Trump Media', 'DJT', 'Truth Social'],
-    'TSN': ['Tyson Foods', 'TSN'],
-    'NVDA': ['Nvidia', 'NVDA'],
-    'NYCB': ['NYCB', 'New York Community Bank'],
-    'CMG': ['Chipotle', 'CMG'],
-    'TSLA': ['Tesla', 'TSLA']
+    # 'BA': ['Boeing', 'BA'],
+    # 'RDDT': ['Reddit', 'RDDT'],
+    # 'AAPL': ['Apple', 'AAPL'],
+    # 'NVO': ['Novo Nordisk', 'NVO'],
+    # 'DJT': ['Trump Media', 'DJT', 'Truth Social'],
+    # 'TSN': ['Tyson Foods', 'TSN'],
+    # 'NVDA': ['Nvidia', 'NVDA'],
+    # 'NYCB': ['New York Community Bank', 'NYCB'],
+    # 'CMG': ['Chipotle', 'CMG'],
+    # 'TSLA': ['Tesla', 'TSLA']
+    'BK': ['Bank of New York Mellon', 'BK']
 }
 
 # Optional: Add News topics/categories to search for each entity
@@ -229,7 +230,7 @@ if __name__ == "__main__":
     print("Google News Entity Scraper")
     print("=" * 70)
     # # Date range configuration
-    START_DATE = datetime(2024, 3, 11)
+    START_DATE = datetime(2025, 4, 2) # to 4/10
 
     queries = build_entity_queries(ENTITIES, topics=None)
     df = run_pull_for_date(START_DATE, queries, ENTITIES)
