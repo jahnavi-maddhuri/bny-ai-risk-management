@@ -16,7 +16,20 @@ from urllib.parse import urlparse, urlunparse
 import requests
 import yaml
 from bs4 import BeautifulSoup
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectTimeout,
+    ConnectionError,
+    ReadTimeout,
+)
+from tenacity import (
+    RetryError,
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 SCHEMA = [
@@ -52,6 +65,8 @@ MIN_PARAGRAPH_CHARS = 40
 MIN_MEANINGFUL_PARAGRAPHS = 3
 MIN_META_HF_CHARS = 200
 MIN_SUMMARY_WORDS = 20
+REQUEST_TIMEOUT = (10, 60)
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -143,11 +158,19 @@ def load_summary_config(path: str) -> SummaryConfig:
 
 
 @retry(
-    wait=wait_exponential(multiplier=1, min=2, max=20),
-    stop=stop_after_attempt(3),
-    retry=retry_if_exception_type(requests.RequestException),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(5),
+    retry=retry_if_exception_type(
+        (ReadTimeout, ConnectTimeout, ConnectionError, ChunkedEncodingError)
+    ),
+    before_sleep=before_sleep_log(LOGGER, logging.WARNING),
 )
-def fetch_feed(feed: FeedConfig, max_records: int, timespan: str) -> List[dict]:
+def fetch_feed(
+    session: requests.Session,
+    feed: FeedConfig,
+    max_records: int,
+    timespan: str,
+) -> List[dict]:
     params = {
         "query": feed.query,
         "mode": "ArtList",
@@ -156,10 +179,10 @@ def fetch_feed(feed: FeedConfig, max_records: int, timespan: str) -> List[dict]:
         "sort": "HybridRel",
         "timespan": timespan,
     }
-    response = requests.get(
+    response = session.get(
         BASE_URL,
         params=params,
-        timeout=30,
+        timeout=REQUEST_TIMEOUT,
         headers={
             "User-Agent": "bny-ai-risk-management/1.0",
             "Accept": "application/json",
@@ -586,10 +609,19 @@ def ingest_feed(
     fetched_at: str,
     seen_ids: set,
     summary_config: SummaryConfig,
+    session: requests.Session,
+    fail_on_feed_error: bool,
 ) -> int:
     try:
-        articles = fetch_feed(feed, max_records=max_records, timespan=timespan)
-    except requests.RequestException as exc:
+        articles = fetch_feed(
+            session,
+            feed,
+            max_records=max_records,
+            timespan=timespan,
+        )
+    except (RetryError, requests.RequestException) as exc:
+        if fail_on_feed_error:
+            raise
         logging.error("Failed to fetch feed %s: %s", feed.name, exc)
         return 0
     except ValueError as exc:
@@ -741,6 +773,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=30,
         help="Max number of existing rows to backfill per run",
     )
+    parser.add_argument(
+        "--fail_on_feed_error",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Exit non-zero when a feed fetch fails after retries",
+    )
     return parser
 
 
@@ -780,17 +818,24 @@ def main() -> int:
 
     fetched_at = datetime.now(timezone.utc).isoformat()
     total_new = 0
+    session = requests.Session()
 
     for feed in feeds:
-        total_new += ingest_feed(
-            feed,
-            out_csv=args.out_csv,
-            max_records=args.max_records,
-            timespan=args.timespan,
-            fetched_at=fetched_at,
-            seen_ids=seen_ids,
-            summary_config=summary_config,
-        )
+        try:
+            total_new += ingest_feed(
+                feed,
+                out_csv=args.out_csv,
+                max_records=args.max_records,
+                timespan=args.timespan,
+                fetched_at=fetched_at,
+                seen_ids=seen_ids,
+                summary_config=summary_config,
+                session=session,
+                fail_on_feed_error=args.fail_on_feed_error,
+            )
+        except (RetryError, requests.RequestException) as exc:
+            logging.error("Failed to fetch feed %s: %s", feed.name, exc)
+            return 1
 
     backfill_missing_summaries(args.out_csv, summary_config)
 
