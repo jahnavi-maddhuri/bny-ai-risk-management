@@ -2,8 +2,8 @@ name: News Scraper Cron
 
 on:
   schedule:
-    # Run at minute 0 past every hour (Hourly)
-    - cron: "0 * * * *"
+    # Run at minute 24 past every hour (Hourly), this is arbritarily set to reduce the load
+    - cron: "24 * * * *"
   workflow_dispatch:
 
 permissions:
