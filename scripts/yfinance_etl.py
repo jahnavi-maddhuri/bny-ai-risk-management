@@ -26,6 +26,7 @@ ENTITIES = {
     'NYCB': 'NYCB',
     'CMG': 'Chipotle',
     'TSLA': 'Tesla'
+    'BK': 
 }
 
 BASE_DIR = 'data'
