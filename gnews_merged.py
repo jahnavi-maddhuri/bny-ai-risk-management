@@ -28,6 +28,6 @@ print("Google News Summarizer")
 print("=" * 70)
 
 # save grouped csv
-fname = f'data/gnews_multi_day/{START_DATE.strftime('%Y-%m-%d')}--TO--{DATE_I.strftime('%Y-%m-%d')}'
+fname = f'data/gnews_multi_day/{START_DATE.strftime('%Y-%m-%d')}--TO--{DATE_I.strftime('%Y-%m-%d')}.csv'
 df.to_csv(fname)
 print(f'Merged Data saved as: {fname}')
