@@ -14,7 +14,6 @@ import random
 # CONFIGURATION
 # ============================================================================
 
-# Same entities as your other script
 ENTITIES = {
     'BA': 'Boeing',
     'RDDT': 'Reddit',
@@ -25,8 +24,8 @@ ENTITIES = {
     'NVDA': 'Nvidia',
     'NYCB': 'NYCB',
     'CMG': 'Chipotle',
-    'TSLA': 'Tesla'
-    'BK': 
+    'TSLA': 'Tesla',
+    'BK': 'Bank of New York Mellon Corp'
 }
 
 BASE_DIR = 'data'
