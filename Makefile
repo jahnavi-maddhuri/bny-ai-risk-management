@@ -10,21 +10,10 @@ install:
 	$(PIP) install -r requirements.txt
 	$(PIP) install --no-deps pygooglenews
 
-.PHONY: run-gnews
-run-gnews:
-	$(PYTHON) scripts/gnews_etl.py
+.PHONY: run_hourly_scraper
+run_hourly_scraper:
+	$(PYTHON) src/run_scraper.py
 
-.PHONY: run-yahoo
-run-yahoo:
-	$(PYTHON) scripts/yfinance_etl.py
-
-.PHONY: run-merge
-run-merge:
-	$(PYTHON) scripts/combine_news.py
-
-.PHONY: run-etl
-run-all: run-gnews run-yahoo run-merge
-	@echo "All scrapers finished. Check /data folder."
 
 .PHONY: clean
 clean:
