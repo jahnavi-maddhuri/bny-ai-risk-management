@@ -13,7 +13,7 @@ class DatabaseManager:
 
     def upsert_raw_news(self, batch):
         if not batch: return
-        return self.client.table(Constant.RAW_NEWS).upsert(batch, on_conflict=Constant.URL_HASH).execute()
+        return self.client.table(Constant.RAW_NEWS).upsert(batch, on_conflict=Constant.URL_HASH,ignore_duplicates=True).execute()
 
 
 db = DatabaseManager()
