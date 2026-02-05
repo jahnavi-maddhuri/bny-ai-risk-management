@@ -1,0 +1,50 @@
+name: Yahoo Finance Weekly Ingestion
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r news_feeds/yahoo_finance/requirements.txt
+
+      - name: Run ingestion
+        run: |
+          cd news_feeds/yahoo_finance
+          python ingest.py --config config.yaml
+
+      - name: Validate output
+        run: |
+          cd news_feeds/yahoo_finance
+          python validate.py --csv data/yahoo_finance_news.csv
+
+      - name: Commit changes
+        run: |
+          if git status --porcelain | grep -E "news_feeds/yahoo_finance/(data/yahoo_finance_news.csv|state/seen_ids.sqlite)"; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add news_feeds/yahoo_finance/data/yahoo_finance_news.csv news_feeds/yahoo_finance/state/seen_ids.sqlite
+            git commit -m "chore: update yahoo finance news feed"
+            git push origin main
+          else
+            echo "No changes to commit"
+          fi

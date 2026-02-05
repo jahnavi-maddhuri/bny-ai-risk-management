@@ -1,0 +1,17 @@
+feeds:
+  - name: bny_mellon
+    query: '("BNY Mellon" OR "Bank of New York Mellon" OR BK)'
+summary:
+  enable_hf_summary: true
+  max_hf_new_per_run: 10
+  max_hf_backfill_per_run: 20
+  backfill_missing_summaries: true
+  backfill_limit: 30
+  denylist_domains:
+    - dailypolitical.com
+    - themarketsdaily.com
+    - tickerreport.com
+  hf_timeout_s: 18
+  hf_delay_s: 0.8
+  hf_model_primary: sshleifer/distilbart-cnn-12-6
+  hf_model_fallback: facebook/bart-large-cnn

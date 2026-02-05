@@ -111,6 +111,7 @@ def make_id(title: str, canonical_link: str) -> str:
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
+#TODO switch to database
 def load_seen(path: str) -> set:
     """Load set of previously seen article IDs."""
     if not os.path.exists(path):
@@ -136,8 +137,14 @@ def write_master(rows: list, master_path: str) -> None:
     if not rows:
         return
     df = pd.DataFrame(rows)
+    
     header = not os.path.exists(master_path)
-    df.to_csv(master_path, mode="a", header=header, index=False)
+
+    if not os.path.exists(master_path):
+        os.makedirs(master_path)
+    
+    output_file = os.path.join(master_path, "gnews.csv")
+    df.to_csv(output_file, mode="a", header=header, index=False)
 
 
 def extract_ticker(query):
@@ -215,7 +222,7 @@ def run_pull_for_date(target_date: datetime, queries: list, entities: dict) -> p
     # Return new articles
     print(f"  Found {len(master_rows)} new articles total.")
     gnews_path = os.path.join(BASE_DIR, 
-                              f'gnews/{target_date.strftime('%Y-%m-%d')}.csv')
+                              f'{target_date.strftime('%Y-%m-%d')}/raw')
 
     write_master(master_rows, gnews_path)
     return pd.DataFrame(master_rows)
@@ -228,8 +235,7 @@ if __name__ == "__main__":
     print("=" * 70)
     print("Google News Entity Scraper")
     print("=" * 70)
-    # # Date range configuration
-    START_DATE = datetime(2024, 3, 11)
-
-    queries = build_entity_queries(ENTITIES, topics=None)
-    df = run_pull_for_date(START_DATE, queries, ENTITIES)
+    TARGET_DATE = datetime.now() - timedelta(days=1) 
+    
+    queries = build_entity_queries(ENTITIES)
+    df = run_pull_for_date(TARGET_DATE, queries, ENTITIES)

@@ -1,0 +1,67 @@
+name: News Scraper Cron
+
+on:
+  schedule:
+    # Run at minute 24 past every hour (Hourly), this is arbritarily set to reduce the load
+    - cron: "24 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scrape-and-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Get the code (and previous data)
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      # 3. Install Dependencies
+      - name: Install Libraries
+        run: make install
+
+      # 4. Run Yahoo Scraper
+      - name: Run Yahoo Scraper
+        run: |
+          echo "Running Hourly Yahoo Scraper..."
+          make run-yahoo
+
+      # 5. Run GNews Scraper (Runs ONLY at 08:00 UTC daily)
+      - name: Run GNews Scraper (Daily Only)
+        run: |
+          current_hour=$(date -u +%H)
+          if [ "$current_hour" == "00" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "It is 00:00 UTC (or manual trigger). Running GNews..."
+            make run-gnews
+          else
+            echo "Skipping GNews (Current hour: $current_hour, Schedule: midnight only)"
+          fi
+
+      # 6. Combine Data
+      - name: Run Combiner
+        run: make run-merge
+
+      # 7. Commit and Push Data back to Repo
+      - name: Commit and Push
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add all new files in data/ directory
+          git add data/
+
+          # Commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-update news data [$(date)]"
+            git push
+          fi
