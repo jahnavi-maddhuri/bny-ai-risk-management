@@ -1,0 +1,34 @@
+name: Hourly News Scrape
+
+on:
+  schedule:
+    # Run at minute 12 past every hour (Hourly), this is arbritarily set to reduce the load
+    - cron: "12 * * * *"
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    concurrency:
+      group: scrape-group
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install Libraries
+        run: make install
+
+      - name: Run Scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        working-directory: ./src
+        run: python run_scraper.py
