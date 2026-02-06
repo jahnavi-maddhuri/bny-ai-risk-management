@@ -269,15 +269,21 @@ def score_articles(summaries, ticker_override=None, anomaly_factor=None):
                 mf, vol, lev, liq = get_market_factor(None, return_components=True)
 
             events = classify_event_llm(summary, ent["entity"] or "Unknown")
+            for e in events:
+                e.setdefault("event_type", "unknown_event")
+                e.setdefault("justification", "No justification provided")
+
             if not events:
                 events = [{"event_type": "unknown_event", "justification": "No specific event detected"}]
 
             for e in events:
                 num_sources = compute_num_sources(ent["entity"] or "", summaries)
 
+                event_type = e.get("event_type", "unknown_event")
+
                 score_obj = compute_risk_score(
                     confidence=ent["confidence"],
-                    event_type=e["event_type"],
+                    event_type=event_type,
                     num_sources=num_sources,
                     anomaly_factor=anomaly_factor[idx] if anomaly_factor is not None else 1.0,
                     market_factor=mf
@@ -287,7 +293,7 @@ def score_articles(summaries, ticker_override=None, anomaly_factor=None):
                     "entity": ent["entity"],
                     "entity_type": ent["entity_type"],
                     "ticker": ticker,
-                    "event_type": e["event_type"],
+                    "event_type": event_type,
                     "risk_score": score_obj["final_score"],
                     "components": {
                         "confidence": score_obj["confidence"],
@@ -302,6 +308,8 @@ def score_articles(summaries, ticker_override=None, anomaly_factor=None):
                     },
                     "justification": e["justification"]
                 })
+        print(f"Processed summary {idx+1}/{len(summaries)}")
+        print(json.dumps(temp_results[-len(events):], indent=2))
 
     return temp_results
 
@@ -310,71 +318,83 @@ def score_articles(summaries, ticker_override=None, anomaly_factor=None):
 # =========================
 # CSV DRIVER
 # =========================
-def score_csv_with_details(csv_path, n=None, output_csv=None, summary_col="title", id_col="id", ticker_col="ticker"):
-    """
-    Reads a CSV, computes anomaly factors for all summaries at once, scores each row,
-    and returns a flattened dataframe with granular details including original ID and summary.
+import os
 
-    Args:
-        csv_path (str): Path to input CSV.
-        n (int, optional): Number of rows to process. Default: all rows.
-        output_csv (str, optional): Path to save output CSV.
-        summary_col (str): Column name containing text summaries.
-        id_col (str): Column name containing unique IDs.
-        ticker_col (str): Column name containing tickers.
-
-    Returns:
-        pd.DataFrame: Flattened dataframe with risk scoring results.
+def score_csv_with_details(
+    csv_path,
+    n=None,
+    output_csv=None,
+    summary_col="title",
+    id_col="id",
+    ticker_col="ticker",
+    batch_size=10
+):
     """
+    Reads a CSV, computes anomaly factors for all summaries at once,
+    scores each row, appends results every `batch_size` rows,
+    and resumes from the last written row if output_csv exists.
+    """
+
     df = pd.read_csv(csv_path)
 
     if summary_col not in df.columns:
         raise ValueError(f"CSV must contain a '{summary_col}' column")
     if ticker_col not in df.columns:
-        df[ticker_col] = None  # fill missing ticker column
+        df[ticker_col] = None
     if id_col not in df.columns:
-        df[id_col] = df.index  # fallback to row index
+        df[id_col] = df.index
 
-    if n is not None:
-        ids = [
-            "b82073738c5fdc75f9a22e73a7ed80d5d4c6d7d91edbd13528d87e1840e25f51",
-            "395eef02e2bbaac1c1ed0d517cd76450210511a758c9545c6dbc77d79d8a555a",
-            "77c23dc9407f7b5e54902d280b790b9372653c3bbd83927c86d32a78d3b20761",
-            "1efeb06a176c08fcdcc0eb8b25576e0e7b5cebcf94ec08474d04122df1ca5c40",
-            "1ddf3cb8b045f46f5652da841692d349e5c1543944a65fc8dc2913d9a0e5be70",
-        "091060d68815fb7dd35dcd51f716bf4abe8797dcc3ea783e0479ebdedd01b75d",
-        "68a32566034a43d550c7835dc76b787fb1500070d70147cfb8edeb779dfd3f99",
-        "0a9a5dd51594b51da7b4ae71ca61515fbf1aa5f03f720fa5a91e8e822d4c0df8",
-        "f87dc4f72fef846c644f13840e5b68e1193b5fed14166a378563daf158c30cd9",
-        "5ee88d9e95958682482244516c6c343c1b4c9e5aad4544759935677cd37b1d53",
-        "14757de9f6fc8afd5cc727dee5bbaaedad648a32b4974e0e46affe4861d14151",
-        "740ef7b7adfca1e25fe315dfcaff2a6f0326f9779ce1f958ba710fffc6d9c45f",
-        "6bf67cd4ed4f71727660484c5f9c95b4ef1ddc4bfa600dcf12a588c87b8bfa0e",
-        "0c3941531617754bb3742fab5b1cdebfa6a8731c7c157daa4a1d73bfab5650ee",
-        "d1ab2136dee2561e390a5d30ec5c7e17bb2e548a19d89b9a83ed024f7ab74632",
-        "5414aa3a99f5d6c0702723cb09d3e838a788dde18ca5f71b409aae56a3872cf9",
-        "2519b6239cd45e8883765dbb0ab52ba463edb35d85b171da82bc54657e3fcd34",
-        "e9a1369ea6045a03ff48744241b3530a7b49b3ecd4934d32bbe0513d0ea13eed",
-        "1b4c3cec4035dc5285b0fdb435bb635e2c9a54a50961f7c51da7b81206f909c4",
-        "157979c6546ef037ba92164e0e4a10f541c512f077e990797b65584710a29d9d",
-    ]
+    # if n is not None:
+    #     df = df.head(n)
 
-        df = df[df["id"].isin(ids)].head(n)
+    processed_ids = set()
+    write_header = True
+
+    if output_csv and os.path.exists(output_csv):
+        existing = pd.read_csv(output_csv)
+        if id_col in existing.columns:
+            processed_ids = set(existing[id_col].astype(str))
+            write_header = False
+
+    df[id_col] = df[id_col].astype(str)
+    df = df[~df[id_col].isin(processed_ids)]
+
+    if df.empty:
+        return pd.DataFrame()
 
     summaries = df[summary_col].astype(str).tolist()
     anomaly_factors = compute_anomaly_factor(summaries, do_clustering=True)
 
-    all_results = []
+    buffer = []
+
+    def flush_to_csv(rows):
+        if not rows or not output_csv:
+            return
+        pd.DataFrame(rows).to_csv(
+            output_csv,
+            mode="a",
+            index=False,
+            header=write_header
+        )
+        rows.clear()
 
     for pos, (_, row) in enumerate(df.iterrows()):
         summary = str(row[summary_col])
         row_id = row[id_col]
-        ticker = row[ticker_col] if pd.notna(row[ticker_col]) and str(row[ticker_col]).strip() else None
+        ticker = (
+            row[ticker_col]
+            if pd.notna(row[ticker_col]) and str(row[ticker_col]).strip()
+            else None
+        )
 
-        results = score_articles([summary], ticker_override=ticker, anomaly_factor=[anomaly_factors[pos]])
+        results = score_articles(
+            [summary],
+            ticker_override=ticker,
+            anomaly_factor=[anomaly_factors[pos]]
+        )
 
         for r in results:
-            flattened = {
+            buffer.append({
                 "row_index": pos,
                 id_col: row_id,
                 summary_col: summary,
@@ -393,16 +413,14 @@ def score_csv_with_details(csv_path, n=None, output_csv=None, summary_col="title
                 "leverage": r["components"]["leverage"],
                 "liquidity": r["components"]["liquidity"],
                 "raw_score": r["components"]["raw_score"]
-            }
-            all_results.append(flattened)
+            })
 
-    result_df = pd.DataFrame(all_results)
+        if (pos + 1) % batch_size == 0:
+            flush_to_csv(buffer)
 
-    if output_csv:
-        result_df.to_csv(output_csv, index=False)
+    flush_to_csv(buffer)
 
-    return result_df
-
+    return pd.DataFrame()
 
 
 # =========================
@@ -410,11 +428,11 @@ def score_csv_with_details(csv_path, n=None, output_csv=None, summary_col="title
 # =========================
 
 if __name__ == "__main__":
-    print("=== Single event test ===")
-    out = score_articles(
-        "BMW EV sales roar in Korea on strong lineup of new models - KED Global"
-    )
-    print(json.dumps(out, indent=2))
+    # print("=== Single event test ===")
+    # out = score_articles(
+    #     "BMW EV sales roar in Korea on strong lineup of new models - KED Global"
+    # )
+    # print(json.dumps(out, indent=2))
 
-    # df_results = score_csv_with_details("2024-03-11.csv", n=10, output_csv="results_2024-03-11(skyelist).csv")
+    df_results = score_csv_with_details("adilusethis.csv", n=10, output_csv="results_adilusethis.csv")
 
