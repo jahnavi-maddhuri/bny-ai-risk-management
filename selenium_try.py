@@ -4,7 +4,8 @@ Optimized version for Google Colab
 - Batches summarization on GPU
 - Parallel processing where possible
 """
-
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 import trafilatura
 from selenium import webdriver
@@ -45,7 +46,7 @@ def get_all_urls(df):
     fetcher = URLFetcher()
     actual_links = []
     
-    for url in tqdm(df['url'], desc="Fetching URLs"):
+    for url in tqdm(df['Potential Aricles'], desc="Fetching URLs"):
         actual_links.append(fetcher.get_real_url(url))
         time.sleep(0.5)  # Small delay to avoid being blocked
     
@@ -137,10 +138,10 @@ if __name__ == "__main__":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     
     # Load data
-    START_DATE = datetime(2025, 4, 2)
-    df = pd.read_csv('/kaggle/input/afterjuly18/filtered_after_july_15 - filtered_after_july_15.csv')
+    # START_DATE = datetime(2025, 4, 2)
+    df = pd.read_csv('Largest Negative Changes US DXY - Sheet1.csv')
     print(f"Loaded {len(df)} articles")
-    # df=df.head(5)
+    # df=df[df["relevance_rank"]<=5]
     
     # Step 1: Get actual URLs (reuses browser)
     print("\n[1/3] Fetching actual URLs...")
@@ -162,8 +163,8 @@ if __name__ == "__main__":
     # print(f"Completed in {time.time() - start_time:.1f}s")
     
     # Save results
-    df.to_csv('/kaggle/working/skye_after_july15.csv')
-    
+    df.to_csv('OUTPUT_Largest Negative Changes US DXY - Sheet1.csv')
+
     # print("\n" + "=" * 70)
     # print(f"Total articles: {df.shape[0]}")
     # print(f"Summaries produced: {df['summary'].notna().sum()}")
