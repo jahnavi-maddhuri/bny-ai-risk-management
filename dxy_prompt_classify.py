@@ -27,9 +27,136 @@ PROMPT_TEMPLATE = """You are a precise macro FX strategist specializing in the U
 
 Note: DXY reflects the value of the US dollar against a basket of major currencies (EUR, JPY, GBP, CAD, SEK, CHF). Focus on broad USD strength or weakness, not a single bilateral pair.
 
+## THE 25 MAJOR FX EVENTS:
+
+*US Monetary Policy:*
+1. Fed Rate Hike
+2. Fed Rate Cut
+3. Hawkish Fed Guidance
+4. Dovish Fed Guidance
+5. Fed QE Announcement
+6. Fed QT/Tapering
+
+*Foreign Monetary Policy (Major DXY Components):*
+7. ECB Rate Hike
+8. ECB Rate Cut
+9. BoJ Policy Tightening
+10. BoJ Policy Easing
+11. BoE Policy Tightening
+12. BoE Policy Easing
+
+*US Economic Data:*
+13. US Inflation Above Expected
+14. US Inflation Below Expected
+15. Strong US Employment (NFP)
+16. Weak US Employment
+17. US GDP Growth Beats
+18. US GDP Contraction/Recession
+
+*Foreign Economic Data (Major DXY Components):*
+19. Strong Eurozone Data
+20. Weak Eurozone Data
+21. Strong Japan/UK Data
+22. Weak Japan/UK Data
+
+*Intervention & Market:*
+23. Coordinated FX Intervention
+24. Global Risk-Off Event/Crisis
+25. Global Risk-On/Equity Rally
+
+## CLASSIFICATION RULES:
+
+DO NOT CLASSIFY if the article is:
+• Opinion pieces or analyst forecasts without new data  
+• Historical analysis without new developments  
+• Generic market commentary  
+• Technical analysis or price predictions  
+• Non-official sources speculating about future events  
+
+DO CLASSIFY if the article reports:
+• Actual data releases (CPI, NFP, GDP, etc.)  
+• Official central bank announcements or speeches  
+• Confirmed policy changes  
+• Major geopolitical events affecting global markets  
+• Confirmed intervention or systemic crisis events  
+
+## IMPACT ASSESSMENT:
+
+For DXY direction:
+• Events strengthening USD relative to the basket → "UP"
+• Events weakening USD relative to the basket → "DOWN"
+• Mixed or offsetting cross-currency effects → "NEUTRAL"
+
+For magnitude:
+• HIGH: Major global policy shift or systemic shock  
+• MEDIUM: Significant data surprise or strong guidance shift  
+• LOW: Minor data surprise or limited macro relevance  
+
+You MUST provide clear macro reasoning for every field in the output, especially:
+• Why the article is or is not FX relevant  
+• Why the specific event number was chosen  
+• Why the direction and magnitude were assigned  
+
 ## ARTICLE TO ANALYZE:
 
 Content: {content}
+
+## REQUIRED OUTPUT FORMAT (JSON):
+Return ONLY valid JSON matching this schema:
+
+{{
+  "is_fx_relevant": true/false,
+  "event_number": 1-25 or null,
+  "event_name": "Event name" or null,
+  "confidence": "high"/"medium"/"low",
+  "dxy_impact": "UP"/"DOWN"/"NEUTRAL" or null,
+  "magnitude": "HIGH"/"MEDIUM"/"LOW" or null,
+  "reasoning": "Detailed macro explanation covering classification logic, USD transmission channel, and magnitude assessment"
+}}
+
+## EXAMPLES
+
+### Example 1
+Article summary: US CPI rises 0.6% month-over-month versus 0.3% expected.
+
+Expected JSON output:
+{{
+  "is_fx_relevant": true,
+  "event_number": 13,
+  "event_name": "US Inflation Above Expected",
+  "confidence": "high",
+  "dxy_impact": "UP",
+  "magnitude": "MEDIUM",
+  "reasoning": "Official CPI release with upside surprise. Higher inflation increases probability of tighter Fed policy, raising US yields and strengthening USD versus the DXY basket."
+}}
+
+### Example 2
+Article summary: ECB unexpectedly cuts rates by 50 basis points and signals further easing.
+
+Expected JSON output:
+{{
+  "is_fx_relevant": true,
+  "event_number": 8,
+  "event_name": "ECB Rate Cut",
+  "confidence": "high",
+  "dxy_impact": "UP",
+  "magnitude": "HIGH",
+  "reasoning": "Official ECB rate cut. Lower Eurozone yields weaken EUR, the largest DXY component, mechanically pushing DXY higher."
+}}
+
+### Example 3
+Article summary: Analyst argues that the dollar may weaken later this year.
+
+Expected JSON output:
+{{
+  "is_fx_relevant": false,
+  "event_number": null,
+  "event_name": null,
+  "confidence": "high",
+  "dxy_impact": null,
+  "magnitude": null,
+  "reasoning": "Opinion-based forecast without new data or policy action. Does not meet classification criteria."
+}}
 """
 
 
